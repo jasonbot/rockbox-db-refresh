@@ -18,10 +18,20 @@ func vlogf(format string, args ...any) {
 	}
 }
 
+// jobOptions carries the flags that steer the build pipeline.
+type jobOptions struct {
+	dryRun         bool
+	refresh        bool
+	shuffle        bool
+	shuffleLimit   int
+	shuffleRecency float64
+}
+
 // job is the actual build pipeline. It reports progress through send and
 // stops early when ctx is cancelled (between files).
-func job(root string, dryRun, shuffle bool, shuffleLimit int, shuffleRecency float64) func(ctx context.Context, send func(any)) {
+func job(root string, opt jobOptions) func(ctx context.Context, send func(any)) {
 	return func(ctx context.Context, send func(any)) {
+		rbDir := filepath.Join(root, ".rockbox")
 		var files []string
 		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -49,7 +59,25 @@ func job(root string, dryRun, shuffle bool, shuffleLimit int, shuffleRecency flo
 			return
 		}
 
+		// -refresh: load the previous database so unchanged files (matched
+		// by device path and mtime) skip parsing and keep their play
+		// counts/ratings; paths absent from the scan are dropped.
+		oldByPath := map[string]*Track{}
+		refreshing := false
+		if opt.refresh {
+			if old, err := readDatabase(rbDir); err != nil {
+				vlogf("refresh: no usable existing database (%v); full rebuild", err)
+			} else {
+				for _, t := range old {
+					oldByPath[t.DevPath] = t
+				}
+				refreshing = true
+				vlogf("refresh: %d entries in existing database", len(old))
+			}
+		}
+
 		tracks := make([]*Track, 0, len(files))
+		reused, updated, added := 0, 0, 0
 		for _, host := range files {
 			select {
 			case <-ctx.Done():
@@ -63,6 +91,21 @@ func job(root string, dryRun, shuffle bool, shuffleLimit int, shuffleRecency flo
 			}
 			devPath := "/" + filepath.ToSlash(rel)
 
+			if refreshing {
+				if ot, ok := oldByPath[devPath]; ok {
+					delete(oldByPath, devPath)
+					if st, serr := os.Stat(host); serr == nil && st.ModTime().Unix() == ot.MTime {
+						tracks = append(tracks, ot)
+						reused++
+						send(msgParse{done: len(tracks), total: len(files), path: devPath, reused: true})
+						continue
+					}
+					updated++
+				} else {
+					added++
+				}
+			}
+
 			t, perr := parseTrackSafe(host, devPath)
 			if perr != nil {
 				tracks = append(tracks, nil)
@@ -73,13 +116,16 @@ func job(root string, dryRun, shuffle bool, shuffleLimit int, shuffleRecency flo
 			tracks = append(tracks, t)
 			send(msgParse{done: len(tracks), total: len(files), path: devPath})
 		}
+		removed := len(oldByPath)
 
-		if dryRun {
+		if opt.dryRun {
+			if refreshing {
+				send(msgRefresh{kept: reused, updated: updated, added: added, removed: removed})
+			}
 			send(msgDone{nil})
 			return
 		}
 
-		rbDir := filepath.Join(root, ".rockbox")
 		if err := os.MkdirAll(rbDir, 0755); err != nil {
 			send(msgDone{err})
 			return
@@ -106,8 +152,18 @@ func job(root string, dryRun, shuffle bool, shuffleLimit int, shuffleRecency flo
 			return
 		}
 
-		if shuffle {
-			n, serr := writeShuffledPlaylist("/"+filepath.Base(rbDir), rbDir, kept, shuffleLimit, shuffleRecency)
+		if refreshing {
+			send(msgRefresh{kept: reused, updated: updated, added: added, removed: removed})
+		}
+
+		if opt.shuffle {
+			// Stamp stable add dates (seeded from ctime on first sight)
+			// before shuffling, then persist them for future refreshes.
+			addedDates := applyAddedDates(rbDir, kept)
+			if serr := writeAddedDates(rbDir, addedDates); serr != nil {
+				vlogf("refresh: could not save add dates: %v", serr)
+			}
+			n, serr := writeShuffledPlaylist("/"+filepath.Base(rbDir), rbDir, kept, opt.shuffleLimit, opt.shuffleRecency)
 			send(msgShuffle{n: n, err: serr})
 		}
 
@@ -127,6 +183,8 @@ func parseTrackSafe(host, devPath string) (t *Track, err error) {
 func main() {
 	root := flag.String("root", "", "device root directory (mount point)")
 	dry := flag.Bool("dry-run", false, "scan and parse only, do not write")
+	refresh := flag.Bool("refresh", false,
+		"incremental update: reuse metadata for unchanged files (matched by path+mtime), drop deleted files, and preserve play counts/ratings")
 	shuffle := flag.Bool("shuffle", false, "after building, install a shuffled playlist of the library as the player's current dynamic playlist (.rockbox/dynamic.m3u8 + .playlist_control)")
 	shuffleLimit := flag.Int("shuffle-limit", shuffleLimitDefault,
 		"max tracks in the shuffled playlist (firmware default max is 10000)")
@@ -179,8 +237,15 @@ func main() {
 	}
 	saveLastRoot(absRoot)
 
+	opts := jobOptions{
+		refresh:        *refresh,
+		shuffle:        *shuffle,
+		shuffleLimit:   *shuffleLimit,
+		shuffleRecency: *shuffleRecency,
+	}
+
 	if useTUI {
-		err = runTUI(absRoot, job(absRoot, false, *shuffle, *shuffleLimit, *shuffleRecency))
+		err = runTUI(absRoot, job(absRoot, opts), *refresh)
 		fmt.Println()
 		if err != nil {
 			fatalf("interface error: %v", err)
@@ -191,7 +256,8 @@ func main() {
 	lastParse := 0
 	shuffleCount := 0
 	doneCh := make(chan error, 1)
-	go job(absRoot, *dry, *shuffle, *shuffleLimit, *shuffleRecency)(ctx, func(m any) {
+	opts.dryRun = *dry
+	go job(absRoot, opts)(ctx, func(m any) {
 		switch msg := m.(type) {
 		case msgFound:
 			fmt.Printf("Found %d candidate audio files under %s\n", msg.n, absRoot)
@@ -202,6 +268,9 @@ func main() {
 			}
 		case msgSkip:
 			vlogf("SKIP %s (%v)", msg.path, msg.err)
+		case msgRefresh:
+			fmt.Printf("refresh: kept %d, updated %d, added %d, removed %d\n",
+				msg.kept, msg.updated, msg.added, msg.removed)
 		case msgTagStart:
 			name, _ := tagNames[msg.tag]
 			vlogf("writing %s (%s)", fileName(msg.tag), name)

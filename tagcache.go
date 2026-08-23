@@ -134,6 +134,18 @@ func tagNumeric(t *Track, tag int) int32 {
 		return clampI32(int64(t.Bitrate))
 	case tagMtime:
 		return clampI32(t.MTime)
+	case tagPlaycount:
+		return clampI32(t.Playcount)
+	case tagRating:
+		return clampI32(t.Rating)
+	case tagPlaytime:
+		return clampI32(t.Playtime)
+	case tagLastPlayed:
+		return clampI32(t.LastPlayed)
+	case tagLastElapsed:
+		return clampI32(t.LastElapsed)
+	case tagLastOffset:
+		return clampI32(t.LastOffset)
 	}
 	return 0
 }
@@ -341,7 +353,8 @@ func Build(dir string, tracks []*Track, onTag TagProgress) error {
 	entries := make([]indexEntry, n)
 	for i, tr := range tracks {
 		for _, tag := range []int{tagYear, tagDiscNumber, tagTrackNumber,
-			tagBitrate, tagLength, tagMtime} {
+			tagBitrate, tagLength, tagMtime, tagPlaycount, tagRating,
+			tagPlaytime, tagLastPlayed, tagLastElapsed, tagLastOffset} {
 			entries[i].seek[tag] = tagNumeric(tr, tag)
 		}
 	}

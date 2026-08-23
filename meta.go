@@ -27,6 +27,20 @@ type Track struct {
 	TrackNum int // -1 = unknown
 	LengthMS int64
 	Bitrate  int // kbps, 0 = unknown
+
+	// Runtime statistics; zero unless restored by -refresh from an
+	// existing database.
+	Playcount   int64
+	Rating      int64
+	Playtime    int64
+	LastPlayed  int64
+	LastElapsed int64
+	LastOffset  int64
+
+	// Added is when the track entered the library (unix seconds). Seeded
+	// from the file ctime on first sight and kept stable across refreshes
+	// via <root>/.rockbox/added.tsv; used by -shuffle recency weighting.
+	Added int64
 }
 
 var audioExts = map[string]bool{

@@ -19,6 +19,7 @@ type msgFound struct{ n int }
 type msgParse struct {
 	done, total int
 	path        string
+	reused      bool // -refresh: carried over from the previous database
 }
 
 type msgSkip struct {
@@ -30,6 +31,9 @@ type msgTagDone struct{ tag int }
 type msgShuffle struct {
 	n   int
 	err error
+}
+type msgRefresh struct {
+	kept, updated, added, removed int
 }
 type msgDone struct{ err error }
 type msgCancelled struct{}
@@ -65,10 +69,13 @@ func fileName(tag int) string {
 type tuiModel struct {
 	root     string
 	cancelFn context.CancelFunc
+	refresh  bool
 
-	found, done, skipped int
-	current              string
-	start                time.Time
+	found, done, skipped, kept int
+	current                    string
+	start                      time.Time
+
+	refreshStats *msgRefresh // set once the job reports the final delta
 
 	tagState map[int]int // -1..12 -> 0 pending, 1 writing, 2 done
 
@@ -85,10 +92,11 @@ type tuiModel struct {
 	wasAtBottom   bool
 }
 
-func newTUIModel(root string, cancelFn context.CancelFunc) tuiModel {
+func newTUIModel(root string, cancelFn context.CancelFunc, refresh bool) tuiModel {
 	m := tuiModel{
 		root:     root,
 		cancelFn: cancelFn,
+		refresh:  refresh,
 		start:    time.Now(),
 		tagState: make(map[int]int),
 		bar:      progress.New(progress.WithWidth(34)),
@@ -228,8 +236,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case msgParse:
 		m.done, m.found = msg.done, msg.total
 		m.current = msg.path
+		if msg.reused {
+			m.kept++
+		}
 		if m.done%2000 == 0 {
-			m.logLine(logLineDim.Render(fmt.Sprintf("parsed %d/%d", m.done, msg.total)))
+			m.logLine(logLineDim.Render(fmt.Sprintf("parsed %d/%d", m.done, m.found)))
 		}
 
 	case msgSkip:
@@ -251,6 +262,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.n, shufflePlaylistFile)))
 		}
 
+	case msgRefresh:
+		m.refreshStats = &msg
+		if msg.removed > 0 || msg.added > 0 || msg.updated > 0 {
+			m.logf("refresh delta: kept %d · updated %d · added %d · removed %d",
+				msg.kept, msg.updated, msg.added, msg.removed)
+		}
+
 	case msgCancelled:
 		m.logLine(logLineSkip.Render("cancelled"))
 		return m, tea.Quit
@@ -260,6 +278,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.buildErr = msg.err
 		if msg.err != nil {
 			m.logLine(logLineSkip.Render("FAILED: " + msg.err.Error()))
+		} else if m.refreshStats != nil {
+			rs := m.refreshStats
+			m.logLine(styleOK.Render(fmt.Sprintf(
+				"done: %d tracks written (%d kept, %d updated, %d added, %d removed), %d skipped",
+				m.done, rs.kept, rs.updated, rs.added, rs.removed, m.skipped)))
 		} else {
 			m.logLine(styleOK.Render(fmt.Sprintf("done: %d tracks written, %d skipped", m.done, m.skipped)))
 		}
@@ -270,7 +293,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m tuiModel) View() tea.View {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Rockbox Database Builder") + styleDim.Render("  ·  tagcache writer") + "\n")
+	subtitle := "  ·  tagcache writer"
+	if m.refresh {
+		subtitle = "  ·  incremental update"
+	}
+	b.WriteString(styleTitle.Render("Rockbox Database Builder") + styleDim.Render(subtitle) + "\n")
 	root := m.root
 	if len(root) > m.width-10 && m.width > 20 {
 		root = "…" + root[len(root)-(m.width-10):]
@@ -294,10 +321,14 @@ func (m tuiModel) View() tea.View {
 	}
 	b.WriteString(line + "\n")
 	b.WriteString(styleDim.Render("current: ") + truncate(m.current, max(0, m.width-12)) + "\n")
-	b.WriteString(fmt.Sprintf("parsed %s  skipped %s  elapsed %s\n",
+	stats := fmt.Sprintf("parsed %s  skipped %s  elapsed %s",
 		styleOK.Render(fmt.Sprint(m.done)),
 		styleBad.Render(fmt.Sprint(m.skipped)),
-		styleDim.Render(time.Since(m.start).Round(time.Second).String())))
+		styleDim.Render(time.Since(m.start).Round(time.Second).String()))
+	if m.refresh {
+		stats += styleDim.Render(fmt.Sprintf("  kept %s", styleOK.Render(fmt.Sprint(m.kept))))
+	}
+	b.WriteString(stats + "\n")
 
 	b.WriteString(styleTitle.Render("output files") + "\n")
 	rows := make([]table.Row, 0, len(tagFiles))
@@ -366,9 +397,9 @@ func truncate(s string, w int) string {
 
 // runTUI drives the bubbletea interface; the job runs in a goroutine that
 // streams progress messages into the program.
-func runTUI(root string, job func(ctx context.Context, send func(any))) error {
+func runTUI(root string, job func(ctx context.Context, send func(any)), refresh bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := tea.NewProgram(newTUIModel(root, cancel))
+	p := tea.NewProgram(newTUIModel(root, cancel, refresh))
 	go job(ctx, func(m any) { p.Send(m) })
 	_, err := p.Run()
 	cancel()
