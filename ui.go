@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -74,6 +75,7 @@ type tuiModel struct {
 	logLines []string
 	vp       viewport.Model
 	bar      progress.Model
+	files    table.Model
 
 	width, height int
 	btnX0, btnX1  int
@@ -96,8 +98,40 @@ func newTUIModel(root string, cancelFn context.CancelFunc) tuiModel {
 	}
 	m.vp = viewport.New()
 	m.vp.MouseWheelEnabled = true
+
+	cols := []table.Column{
+		{Title: " ", Width: 1},
+		{Title: "output file", Width: 18},
+		{Title: "tag", Width: 17},
+		{Title: "status", Width: 9},
+	}
+	w := 0
+	for _, c := range cols {
+		w += c.Width + 2 // cell padding
+	}
+	m.files = table.New(
+		table.WithColumns(cols),
+		table.WithHeight(len(tagFiles)+1), // rows + header
+		table.WithWidth(w),
+	)
+	st := table.DefaultStyles()
+	st.Selected = st.Cell // no row is selectable; drop the cursor highlight
+	m.files.SetStyles(st)
+
 	m.logLine(styleDim.Render("scanning " + root + " …"))
 	return m
+}
+
+// eta estimates remaining time from the average parse rate so far.
+func eta(elapsed time.Duration, done, total int) string {
+	if done <= 0 || total <= 0 || done >= total || elapsed <= 0 {
+		return ""
+	}
+	rate := float64(done) / elapsed.Seconds()
+	if rate <= 0 {
+		return ""
+	}
+	return (time.Duration(float64(total-done)/rate) * time.Second).Round(time.Second).String()
 }
 
 func (m *tuiModel) logf(format string, args ...any) {
@@ -251,10 +285,14 @@ func (m tuiModel) View() tea.View {
 	if m.found > 0 {
 		status = fmt.Sprintf("%d/%d files", m.done, m.found)
 	}
-	if m.cancelling {
-		status += "  (cancelling)"
+	line := "overall " + m.bar.ViewAs(pct) + "  " + status
+	if rem := eta(time.Since(m.start), m.done, m.found); rem != "" {
+		line += styleDim.Render(fmt.Sprintf("  ·  eta %s", rem))
 	}
-	b.WriteString("overall " + m.bar.ViewAs(pct) + "  " + status + "\n")
+	if m.cancelling {
+		line += "  (cancelling)"
+	}
+	b.WriteString(line + "\n")
 	b.WriteString(styleDim.Render("current: ") + truncate(m.current, max(0, m.width-12)) + "\n")
 	b.WriteString(fmt.Sprintf("parsed %s  skipped %s  elapsed %s\n\n",
 		styleOK.Render(fmt.Sprint(m.done)),
@@ -262,6 +300,7 @@ func (m tuiModel) View() tea.View {
 		styleDim.Render(time.Since(m.start).Round(time.Second).String())))
 
 	b.WriteString(styleTitle.Render("output files") + "\n")
+	rows := make([]table.Row, 0, len(tagFiles))
 	for _, t := range tagFiles {
 		glyph, st := "·", styleDim.Render("pending")
 		switch m.tagState[t] {
@@ -271,17 +310,17 @@ func (m tuiModel) View() tea.View {
 			glyph, st = "✔", styleOK.Render("done")
 		}
 		name, purpose := fileName(t), tagNames[t]
-		b.WriteString(fmt.Sprintf(" %s %-18s %-16s %s\n", glyph, name, purpose, st))
+		rows = append(rows, table.Row{glyph, name, purpose, st})
 	}
+	m.files.SetRows(rows)
+	b.WriteString(m.files.View() + "\n")
 
-	half := "\nlog ─" + strings.Repeat("─", max(0, m.width-8)) + "\n"
-	b.WriteString(half)
+	b.WriteString("\nlog ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
 
-	// Reserve exactly the rows already written above (21) plus the newline
-	// after the viewport and the button row itself, so the button always
-	// stays visible at the bottom of the screen.
-	reserved := 22
-	vpH := max(3, m.height-reserved)
+	// Size the log viewport from the actual number of rows already emitted,
+	// leaving exactly one row for the button bar at the bottom.
+	topLines := strings.Count(b.String(), "\n")
+	vpH := max(3, m.height-topLines-1)
 	m.vp.SetHeight(vpH)
 	b.WriteString(m.vp.View() + "\n")
 
@@ -300,12 +339,12 @@ func (m tuiModel) View() tea.View {
 	runes := []rune(label)
 	pad := max(0, m.width-len(runes))
 	left := pad / 2
-	line := strings.Repeat(" ", left) + styled
+	btnLine := strings.Repeat(" ", left) + styled
 	m.btnX0, m.btnX1 = left, left+len(runes)-1
-	for len([]rune(line)) < m.width {
-		line += " "
+	for len([]rune(btnLine)) < m.width {
+		btnLine += " "
 	}
-	b.WriteString(line)
+	b.WriteString(btnLine)
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
