@@ -26,6 +26,10 @@ type msgSkip struct {
 }
 type msgTagStart struct{ tag int }
 type msgTagDone struct{ tag int }
+type msgShuffle struct {
+	n   int
+	err error
+}
 type msgDone struct{ err error }
 type msgCancelled struct{}
 type tickMsg struct{}
@@ -36,8 +40,8 @@ var (
 	styleOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	styleActive = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	styleBad    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	buttonStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("52"))
-	buttonHot   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("88"))
+	buttonStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("124"))
+	buttonHot   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("196"))
 	logLineSkip = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	logLineDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
@@ -206,6 +210,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case msgTagDone:
 		m.tagState[msg.tag] = 2
 
+	case msgShuffle:
+		if msg.err != nil {
+			m.logLine(logLineSkip.Render(fmt.Sprintf("SHUFFLE FAILED: %v", msg.err)))
+		} else {
+			m.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.n, shufflePlaylistFile)))
+		}
+
 	case msgCancelled:
 		m.logLine(logLineSkip.Render("cancelled"))
 		return m, tea.Quit
@@ -266,26 +277,32 @@ func (m tuiModel) View() tea.View {
 	half := "\nlog ─" + strings.Repeat("─", max(0, m.width-8)) + "\n"
 	b.WriteString(half)
 
-	// Reserve: header+table (~17 lines), log viewport, bottom button bar.
-	reserved := 19
-	vpH := max(3, m.height-reserved-1)
+	// Reserve exactly the rows already written above (21) plus the newline
+	// after the viewport and the button row itself, so the button always
+	// stays visible at the bottom of the screen.
+	reserved := 22
+	vpH := max(3, m.height-reserved)
 	m.vp.SetHeight(vpH)
 	b.WriteString(m.vp.View() + "\n")
 
-	label := "[ Cancel ]  ← click, or press c"
+	label := "  ✖  CANCEL   press c · or click  "
 	if m.cancelling {
-		label = "[ Cancelling… ]"
+		label = "  ⏳ CANCELLING…  "
 	}
 	if m.finished {
-		label = "[ Done ]  press q to exit"
+		label = "  ✔  DONE   press q to exit  "
 	}
-	styled := buttonStyle.Render(label)
+	style := buttonStyle
 	if m.cancelling {
-		styled = buttonHot.Render(label)
+		style = buttonHot
 	}
-	line := "  " + styled
-	m.btnX0, m.btnX1 = 2, 2+len([]rune(label))-1
-	for len([]rune(line)) < m.width-1 {
+	styled := style.Bold(true).Render(label)
+	runes := []rune(label)
+	pad := max(0, m.width-len(runes))
+	left := pad / 2
+	line := strings.Repeat(" ", left) + styled
+	m.btnX0, m.btnX1 = left, left+len(runes)-1
+	for len([]rune(line)) < m.width {
 		line += " "
 	}
 	b.WriteString(line)

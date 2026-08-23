@@ -20,7 +20,7 @@ func vlogf(format string, args ...any) {
 
 // job is the actual build pipeline. It reports progress through send and
 // stops early when ctx is cancelled (between files).
-func job(root string, dryRun bool) func(ctx context.Context, send func(any)) {
+func job(root string, dryRun, shuffle bool, shuffleLimit int, shuffleRecency float64) func(ctx context.Context, send func(any)) {
 	return func(ctx context.Context, send func(any)) {
 		var files []string
 		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -101,7 +101,17 @@ func job(root string, dryRun bool) func(ctx context.Context, send func(any)) {
 				send(msgTagStart{tag})
 			}
 		})
-		send(msgDone{err})
+		if err != nil {
+			send(msgDone{err})
+			return
+		}
+
+		if shuffle {
+			n, serr := writeShuffledPlaylist("/"+filepath.Base(rbDir), rbDir, kept, shuffleLimit, shuffleRecency)
+			send(msgShuffle{n: n, err: serr})
+		}
+
+		send(msgDone{nil})
 	}
 }
 
@@ -117,6 +127,11 @@ func parseTrackSafe(host, devPath string) (t *Track, err error) {
 func main() {
 	root := flag.String("root", "", "device root directory (mount point)")
 	dry := flag.Bool("dry-run", false, "scan and parse only, do not write")
+	shuffle := flag.Bool("shuffle", false, "after building, install a shuffled playlist of the library as the player's current dynamic playlist (.rockbox/dynamic.m3u8 + .playlist_control)")
+	shuffleLimit := flag.Int("shuffle-limit", shuffleLimitDefault,
+		"max tracks in the shuffled playlist (firmware default max is 10000)")
+	shuffleRecency := flag.Float64("shuffle-recency", 2.0,
+		"recency bias strength for -shuffle: newer files (by ctime) tend to sit nearer the front; 0 = uniform shuffle")
 	flag.IntVar(&maxStringTagLen, "max-tag", 512,
 		"truncate non-path metadata strings to this many bytes (rune-safe); paths are kept up to 1024 bytes")
 	noTUI := flag.Bool("no-tui", false, "plain output instead of the interactive interface")
@@ -141,7 +156,7 @@ func main() {
 
 	useTUI := !*noTUI && !*dry && isTTY(os.Stdout)
 	if useTUI {
-		err = runTUI(absRoot, job(absRoot, false))
+		err = runTUI(absRoot, job(absRoot, false, *shuffle, *shuffleLimit, *shuffleRecency))
 		fmt.Println()
 		if err != nil {
 			fatalf("interface error: %v", err)
@@ -150,8 +165,9 @@ func main() {
 	}
 	ctx := context.Background()
 	lastParse := 0
+	shuffleCount := 0
 	doneCh := make(chan error, 1)
-	go job(absRoot, *dry)(ctx, func(m any) {
+	go job(absRoot, *dry, *shuffle, *shuffleLimit, *shuffleRecency)(ctx, func(m any) {
 		switch msg := m.(type) {
 		case msgFound:
 			fmt.Printf("Found %d candidate audio files under %s\n", msg.n, absRoot)
@@ -165,6 +181,13 @@ func main() {
 		case msgTagStart:
 			name, _ := tagNames[msg.tag]
 			vlogf("writing %s (%s)", fileName(msg.tag), name)
+		case msgShuffle:
+			if msg.err != nil {
+				fmt.Printf("\rshuffle playlist failed: %v\n", msg.err)
+			} else {
+				vlogf("shuffled playlist: %d tracks -> %s", msg.n, "/"+shufflePlaylistFile)
+				shuffleCount = msg.n
+			}
 		case msgDone:
 			doneCh <- msg.err
 		}
@@ -175,6 +198,10 @@ func main() {
 	}
 	if !*dry {
 		fmt.Printf("\rWrote tagcache database to %s/.rockbox            \n", absRoot)
+		if shuffleCount > 0 {
+			fmt.Printf("Installed shuffled playlist (%d tracks): %s/.rockbox/%s\n", shuffleCount, absRoot, shufflePlaylistFile)
+			fmt.Println("It becomes the player's current playlist on next boot; playback resume still depends on your device's autoresume/bookmark settings.")
+		}
 	} else {
 		fmt.Println("\nDry run complete.")
 	}

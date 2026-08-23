@@ -178,6 +178,7 @@ go build -o rbdb .          # inside utils/tagcache-go
 ./rbdb /media/player        # interactive TUI, writes <root>/.rockbox
 ./rbdb -no-tui /media/player  # plain progress output (also used when piped)
 ./rbdb -dry-run /media/player # scan + parse only, prints what would be written
+./rbdb -shuffle /media/player # also install a shuffled library playlist
 ```
 
 Interactive mode (default on a TTY) is built with
@@ -208,6 +209,21 @@ The tool:
 
 Paths stored in the DB are device paths (`/Music/foo.mp3`), derived from the
 file's location below `-root`.
+
+With `-shuffle`, after a successful build the tool additionally writes
+`<root>/.rockbox/dynamic.m3u8` (a shuffled playlist of the whole library,
+capped by `-shuffle-limit`, default 9999) and `<root>/.rockbox/.playlist_control`
+referencing it — the same pair of files the firmware uses for the current
+dynamic playlist (`playlist_resume()` in `apps/playlist.c`). On next boot the
+player therefore has the shuffled library as its current playlist; actually
+*resuming playback* still depends on the device's autoresume/bookmark
+settings, since the firmware caps playlists at its "max files in playlist"
+setting (default 10000).
+
+The shuffle is recency-weighted: tracks are ranked by file ctime and sampled
+without replacement with weight `1/(rank+1)^-shuffle-recency` (Efraimidis–Spirakis),
+so recently added files tend to appear nearer the front while every ordering
+remains possible. `-shuffle-recency 0` gives a plain uniform shuffle.
 
 ### 2.2 Robustness
 

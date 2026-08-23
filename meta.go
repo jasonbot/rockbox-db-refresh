@@ -19,6 +19,7 @@ type Track struct {
 	HostPath string
 	Size     int64
 	MTime    int64
+	CTime    int64
 
 	Meta     Meta
 	Year     int
@@ -49,7 +50,7 @@ func parseTrack(hostPath, devPath string) (*Track, error) {
 	}
 
 	t := &Track{DevPath: devPath, HostPath: hostPath, Size: st.Size(),
-		MTime: st.ModTime().Unix(), TrackNum: -1}
+		MTime: st.ModTime().Unix(), CTime: fileCTime(st), TrackNum: -1}
 
 	switch strings.ToLower(filepath.Ext(hostPath)) {
 	case ".mp3", ".mp2":
