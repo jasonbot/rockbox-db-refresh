@@ -139,12 +139,36 @@ func main() {
 	flag.Parse()
 
 	rootPath := *root
-	if rootPath == "" {
-		rootPath = "."
-		if flag.NArg() > 0 {
-			rootPath = flag.Arg(0)
+	explicit := rootPath != ""
+	if !explicit && flag.NArg() > 0 {
+		rootPath = flag.Arg(0)
+		explicit = true
+	}
+
+	useTUI := !*noTUI && !*dry && isTTY(os.Stdout)
+
+	if !explicit {
+		cached := readLastRoot()
+		switch {
+		case useTUI:
+			// Let the user confirm/change the root interactively, starting
+			// from the last used location; never auto-start the build.
+			picked, perr := pickRoot(cached)
+			if perr != nil {
+				fatalf("interface error: %v", perr)
+			}
+			if picked == "" {
+				return
+			}
+			rootPath = picked
+		case cached != "":
+			rootPath = cached
+			fmt.Printf("using last root %s (pass a path or -root to override)\n", cached)
+		default:
+			rootPath = "."
 		}
 	}
+
 	absRoot, err := filepath.Abs(rootPath)
 	if err != nil {
 		fatalf("bad root: %v", err)
@@ -153,8 +177,8 @@ func main() {
 	if err != nil || !st.IsDir() {
 		fatalf("not a directory: %s", absRoot)
 	}
+	saveLastRoot(absRoot)
 
-	useTUI := !*noTUI && !*dry && isTTY(os.Stdout)
 	if useTUI {
 		err = runTUI(absRoot, job(absRoot, false, *shuffle, *shuffleLimit, *shuffleRecency))
 		fmt.Println()

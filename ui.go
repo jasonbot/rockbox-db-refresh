@@ -100,7 +100,7 @@ func newTUIModel(root string, cancelFn context.CancelFunc) tuiModel {
 	m.vp.MouseWheelEnabled = true
 
 	cols := []table.Column{
-		{Title: " ", Width: 1},
+		{Title: " ", Width: 2}, // room for single- and double-width glyphs
 		{Title: "output file", Width: 18},
 		{Title: "tag", Width: 17},
 		{Title: "status", Width: 9},
@@ -115,7 +115,7 @@ func newTUIModel(root string, cancelFn context.CancelFunc) tuiModel {
 		table.WithWidth(w),
 	)
 	st := table.DefaultStyles()
-	st.Selected = st.Cell // no row is selectable; drop the cursor highlight
+	st.Selected = lipgloss.NewStyle() // nothing selectable: render identically
 	m.files.SetStyles(st)
 
 	m.logLine(styleDim.Render("scanning " + root + " …"))
@@ -294,7 +294,7 @@ func (m tuiModel) View() tea.View {
 	}
 	b.WriteString(line + "\n")
 	b.WriteString(styleDim.Render("current: ") + truncate(m.current, max(0, m.width-12)) + "\n")
-	b.WriteString(fmt.Sprintf("parsed %s  skipped %s  elapsed %s\n\n",
+	b.WriteString(fmt.Sprintf("parsed %s  skipped %s  elapsed %s\n",
 		styleOK.Render(fmt.Sprint(m.done)),
 		styleBad.Render(fmt.Sprint(m.skipped)),
 		styleDim.Render(time.Since(m.start).Round(time.Second).String())))
@@ -315,7 +315,7 @@ func (m tuiModel) View() tea.View {
 	m.files.SetRows(rows)
 	b.WriteString(m.files.View() + "\n")
 
-	b.WriteString("\nlog ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
+	b.WriteString("log ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
 
 	// Size the log viewport from the actual number of rows already emitted,
 	// leaving exactly one row for the button bar at the bottom.
