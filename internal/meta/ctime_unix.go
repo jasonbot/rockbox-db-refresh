@@ -1,6 +1,6 @@
 //go:build unix && !darwin
 
-package main
+package meta
 
 import (
 	"os"

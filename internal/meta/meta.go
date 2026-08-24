@@ -1,4 +1,4 @@
-package main
+package meta
 
 import (
 	"errors"
@@ -43,7 +43,8 @@ type Track struct {
 	Added int64
 }
 
-var audioExts = map[string]bool{
+// AudioExts lists the file extensions the scanner picks up.
+var AudioExts = map[string]bool{
 	".mp3": true, ".mp2": true, ".flac": true,
 	".ogg": true, ".oga": true, ".opus": true,
 	".m4a": true, ".m4b": true, ".mp4": true,
@@ -52,7 +53,8 @@ var audioExts = map[string]bool{
 
 var errUnsupported = errors.New("unsupported format")
 
-func parseTrack(hostPath, devPath string) (*Track, error) {
+// ParseTrack probes hostPath, fills in a Track with device path devPath.
+func ParseTrack(hostPath, devPath string) (*Track, error) {
 	f, err := os.Open(hostPath)
 	if err != nil {
 		return nil, err

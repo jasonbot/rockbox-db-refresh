@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"os"
@@ -95,9 +95,9 @@ func (m pickerModel) View() tea.View {
 	return v
 }
 
-// pickRoot runs the interactive root-directory chooser. Returns the chosen
+// PickRoot runs the interactive root-directory chooser. Returns the chosen
 // directory, or "" if the user quit without choosing.
-func pickRoot(cached string) (string, error) {
+func PickRoot(cached string) (string, error) {
 	p := tea.NewProgram(newPickerModel(cached))
 	out, err := p.Run()
 	if err != nil {

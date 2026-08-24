@@ -199,6 +199,18 @@ checked against that ceiling instead of wrapping.
 
 Pure Go stdlib, no cgo, single static binary.
 
+### Layout
+
+```
+main.go                  flags, scan/refresh pipeline, wiring
+internal/meta/           Track type + tag parsers (ID3, APE, FLAC/Vorbis, Ogg, MP4)
+internal/db/             tagcache writer (Build) and reader (ReadDatabase)
+internal/shuffle/        shuffled playlist install, recency weighting, added.tsv store
+internal/tui/            build-progress screen and root filepicker
+internal/config/         last-root cache
+internal/progress/       message types piped from the pipeline to the UIs
+```
+
 Known gaps vs. the C implementation: no duration parsing for APE/MPC/WV (they
 get length 0), legacy codepages (e.g. Shift-JIS tags) are stored verbatim as
 bytes, rendered however the player's codepage setting says. `-refresh` keys

@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"bytes"
@@ -6,17 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"rbdb/internal/meta"
 )
 
 // flagDeleted mirrors FLAG_DELETED in apps/tagcache.c.
 const flagDeleted = 0x0001
 
-// readDatabase loads the tracks of an existing database (as written by
-// Build or the firmware) from rbDir, reconstructing string metadata and
-// numeric tags — including runtime statistics such as playcount and
-// rating — so unchanged files can be carried over by -refresh without
-// re-parsing and without losing play counts.
-func readDatabase(rbDir string) ([]*Track, error) {
+// ReadDatabase loads the tracks of an existing database from rbDir,
+// reconstructing string metadata, numeric tags and runtime statistics.
+func ReadDatabase(rbDir string) ([]*meta.Track, error) {
 	idx, err := os.ReadFile(filepath.Join(rbDir, "database_idx.tcd"))
 	if err != nil {
 		return nil, err
@@ -41,7 +39,7 @@ func readDatabase(rbDir string) ([]*Track, error) {
 		tagData[tag] = data
 	}
 
-	tracks := make([]*Track, 0, entryCount)
+	tracks := make([]*meta.Track, 0, entryCount)
 	for i := 0; i < entryCount; i++ {
 		rec := idx[24+96*i:]
 		var seek [tagCount]int32
@@ -60,9 +58,9 @@ func readDatabase(rbDir string) ([]*Track, error) {
 			return nil, fmt.Errorf("master index entry %d has no filename", i)
 		}
 
-		tracks = append(tracks, &Track{
+		tracks = append(tracks, &meta.Track{
 			DevPath: devPath,
-			Meta: Meta{
+			Meta: meta.Meta{
 				Title:       str(tagTitle),
 				Artist:      str(tagArtist),
 				Album:       str(tagAlbum),

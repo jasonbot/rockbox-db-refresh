@@ -1,4 +1,4 @@
-package main
+package shuffle
 
 import (
 	"bufio"
@@ -11,17 +11,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"rbdb/internal/meta"
 )
 
 // Default cap for the generated shuffled playlist. The firmware keeps the
 // whole playlist in RAM ("max files in playlist" setting, default 10000 on
 // devices with > 1 MB of memory), so we stay just under that.
-const shuffleLimitDefault = 9999
+const ShuffleLimitDefault = 9999
 
 // Name of the shuffled playlist written into .rockbox/, referenced by the
 // control file below. Must stay an .m3u8 name so the firmware treats it as
 // UTF-8 (is_m3u8_name() in apps/playlist.c).
-const shufflePlaylistFile = "dynamic.m3u8"
+const PlaylistFile = "dynamic.m3u8"
 
 // addedDatesFile persists per-track add dates (unix seconds) as
 // "devPath\tseconds" lines. The tagcache format has no add-time tag, so
@@ -30,7 +32,7 @@ const shufflePlaylistFile = "dynamic.m3u8"
 // changes later (tag edits, copies...).
 const addedDatesFile = "added.tsv"
 
-func readAddedDates(rbDir string) map[string]int64 {
+func ReadAddedDates(rbDir string) map[string]int64 {
 	m := make(map[string]int64)
 	f, err := os.Open(filepath.Join(rbDir, addedDatesFile))
 	if err != nil {
@@ -53,8 +55,8 @@ func readAddedDates(rbDir string) map[string]int64 {
 	return m
 }
 
-// writeAddedDates atomically replaces the sidecar with the given entries.
-func writeAddedDates(rbDir string, m map[string]int64) error {
+// WriteAddedDates atomically replaces the sidecar with the given entries.
+func WriteAddedDates(rbDir string, m map[string]int64) error {
 	type kv struct {
 		k string
 		v int64
@@ -86,12 +88,12 @@ func writeAddedDates(rbDir string, m map[string]int64) error {
 	return os.Rename(tmp, filepath.Join(rbDir, addedDatesFile))
 }
 
-// applyAddedDates stamps each kept track with its add date: previously seen
+// ApplyAddedDates stamps each kept track with its add date: previously seen
 // paths keep their stored value; new paths are seeded from the file ctime
 // (mtime as fallback). Returns the updated map, pruned to the kept set,
 // ready to be written back.
-func applyAddedDates(rbDir string, tracks []*Track) map[string]int64 {
-	stored := readAddedDates(rbDir)
+func ApplyAddedDates(rbDir string, tracks []*meta.Track) map[string]int64 {
+	stored := ReadAddedDates(rbDir)
 	now := time.Now().Unix()
 	for _, t := range tracks {
 		if v, ok := stored[t.DevPath]; ok && v > 0 {
@@ -115,7 +117,7 @@ func applyAddedDates(rbDir string, tracks []*Track) map[string]int64 {
 // first line is P:<version>:<dir>:<file>; a nonempty <file> makes the
 // firmware load the tracks from <dir>/<file> as the current playlist when it
 // replays this file in playlist_resume().
-func writeShuffledPlaylist(rbDevDir string, rbDir string, tracks []*Track, limit int, recency float64) (int, error) {
+func WriteShuffledPlaylist(rbDevDir string, rbDir string, tracks []*meta.Track, limit int, recency float64) (int, error) {
 	if len(tracks) == 0 {
 		return 0, fmt.Errorf("no tracks to shuffle")
 	}
@@ -136,11 +138,11 @@ func writeShuffledPlaylist(rbDevDir string, rbDir string, tracks []*Track, limit
 		b = append(b, p...)
 		b = append(b, '\n')
 	}
-	if err := os.WriteFile(filepath.Join(rbDir, shufflePlaylistFile), b, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(rbDir, PlaylistFile), b, 0644); err != nil {
 		return 0, err
 	}
 
-	control := fmt.Sprintf("P:6:%s:%s\n", rbDevDir, shufflePlaylistFile)
+	control := fmt.Sprintf("P:6:%s:%s\n", rbDevDir, PlaylistFile)
 	if err := os.WriteFile(filepath.Join(rbDir, ".playlist_control"), []byte(control), 0644); err != nil {
 		return 0, err
 	}
@@ -154,8 +156,8 @@ func writeShuffledPlaylist(rbDevDir string, rbDir string, tracks []*Track, limit
 // the keys are sorted in decreasing order. Every permutation is still
 // possible, but the expected position of a track rises with its recency
 // rank. Tracks without a recorded add date fall back to ctime.
-func recencyShuffle(tracks []*Track, recency float64) {
-	added := func(t *Track) int64 {
+func recencyShuffle(tracks []*meta.Track, recency float64) {
+	added := func(t *meta.Track) int64 {
 		if t.Added > 0 {
 			return t.Added
 		}
@@ -169,12 +171,12 @@ func recencyShuffle(tracks []*Track, recency float64) {
 		return
 	}
 
-	order := make([]*Track, len(tracks))
+	order := make([]*meta.Track, len(tracks))
 	copy(order, tracks)
 	sort.SliceStable(order, func(i, j int) bool { return added(order[i]) > added(order[j]) })
 
 	type keyed struct {
-		t *Track
+		t *meta.Track
 		k float64
 	}
 	keys := make([]keyed, len(order))

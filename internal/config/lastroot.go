@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"os"
@@ -18,8 +18,8 @@ func lastRootPath() (string, error) {
 	return filepath.Join(dir, lastRootRelPath), nil
 }
 
-// readLastRoot returns the remembered root, or "" if none was saved.
-func readLastRoot() string {
+// ReadLastRoot returns the remembered root, or "" if none was saved.
+func ReadLastRoot() string {
 	p, err := lastRootPath()
 	if err != nil {
 		return ""
@@ -31,7 +31,7 @@ func readLastRoot() string {
 	return strings.TrimSpace(string(b))
 }
 
-func saveLastRoot(path string) error {
+func SaveLastRoot(path string) error {
 	p, err := lastRootPath()
 	if err != nil {
 		return err

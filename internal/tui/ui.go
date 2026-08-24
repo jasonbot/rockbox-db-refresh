@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -6,37 +6,17 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/progress"
+	bubblesprogress "charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"rbdb/internal/progress"
+	"rbdb/internal/shuffle"
 )
 
-// Messages sent from the job goroutine to the UI.
-type msgFound struct{ n int }
-
-type msgParse struct {
-	done, total int
-	path        string
-	reused      bool // -refresh: carried over from the previous database
-}
-
-type msgSkip struct {
-	path string
-	err  error
-}
-type msgTagStart struct{ tag int }
-type msgTagDone struct{ tag int }
-type msgShuffle struct {
-	n   int
-	err error
-}
-type msgRefresh struct {
-	kept, updated, added, removed int
-}
-type msgDone struct{ err error }
-type msgCancelled struct{}
+// tickMsg drives periodic UI refreshes.
 type tickMsg struct{}
 
 var (
@@ -51,7 +31,8 @@ var (
 	logLineDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
 
-var tagNames = map[int]string{
+// TagNames maps tag ids to display names.
+var TagNames = map[int]string{
 	0: "artist", 1: "album", 2: "genre", 3: "title", 4: "filename",
 	5: "composer", 6: "comment", 7: "albumartist", 8: "grouping",
 	12: "canonicalartist", -1: "master index (database_idx.tcd)",
@@ -59,7 +40,8 @@ var tagNames = map[int]string{
 
 var tagFiles = []int{-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 12}
 
-func fileName(tag int) string {
+// FileName returns the on-device file name for a tag (-1 = master index).
+func FileName(tag int) string {
 	if tag == -1 {
 		return "database_idx.tcd"
 	}
@@ -75,13 +57,13 @@ type tuiModel struct {
 	current                    string
 	start                      time.Time
 
-	refreshStats *msgRefresh // set once the job reports the final delta
+	refreshStats *progress.Refresh // set once the job reports the final delta
 
 	tagState map[int]int // -1..12 -> 0 pending, 1 writing, 2 done
 
 	logLines []string
 	vp       viewport.Model
-	bar      progress.Model
+	bar      bubblesprogress.Model
 	files    table.Model
 
 	width, height int
@@ -99,7 +81,7 @@ func newTUIModel(root string, cancelFn context.CancelFunc, refresh bool) tuiMode
 		refresh:  refresh,
 		start:    time.Now(),
 		tagState: make(map[int]int),
-		bar:      progress.New(progress.WithWidth(34)),
+		bar:      bubblesprogress.New(bubblesprogress.WithWidth(34)),
 	}
 	for _, t := range tagFiles {
 		m.tagState[t] = 0
@@ -229,60 +211,60 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
 
-	case msgFound:
-		m.found = msg.n
-		m.logf("found %d candidate audio files", msg.n)
+	case progress.Found:
+		m.found = msg.N
+		m.logf("found %d candidate audio files", msg.N)
 
-	case msgParse:
-		m.done, m.found = msg.done, msg.total
-		m.current = msg.path
-		if msg.reused {
+	case progress.Parse:
+		m.done, m.found = msg.Done, msg.Total
+		m.current = msg.Path
+		if msg.Reused {
 			m.kept++
 		}
 		if m.done%2000 == 0 {
 			m.logLine(logLineDim.Render(fmt.Sprintf("parsed %d/%d", m.done, m.found)))
 		}
 
-	case msgSkip:
+	case progress.Skip:
 		m.skipped++
-		m.logLine(logLineSkip.Render(fmt.Sprintf("SKIP %s (%v)", msg.path, msg.err)))
+		m.logLine(logLineSkip.Render(fmt.Sprintf("SKIP %s (%v)", msg.Path, msg.Err)))
 
-	case msgTagStart:
-		m.tagState[msg.tag] = 1
-		name, _ := tagNames[msg.tag]
-		m.logLine(logLineDim.Render("writing " + fileName(msg.tag) + " (" + name + ")"))
+	case progress.TagStart:
+		m.tagState[msg.Tag] = 1
+		name, _ := TagNames[msg.Tag]
+		m.logLine(logLineDim.Render("writing " + FileName(msg.Tag) + " (" + name + ")"))
 
-	case msgTagDone:
-		m.tagState[msg.tag] = 2
+	case progress.TagDone:
+		m.tagState[msg.Tag] = 2
 
-	case msgShuffle:
-		if msg.err != nil {
-			m.logLine(logLineSkip.Render(fmt.Sprintf("SHUFFLE FAILED: %v", msg.err)))
+	case progress.Shuffle:
+		if msg.Err != nil {
+			m.logLine(logLineSkip.Render(fmt.Sprintf("SHUFFLE FAILED: %v", msg.Err)))
 		} else {
-			m.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.n, shufflePlaylistFile)))
+			m.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.N, shuffle.PlaylistFile)))
 		}
 
-	case msgRefresh:
+	case progress.Refresh:
 		m.refreshStats = &msg
-		if msg.removed > 0 || msg.added > 0 || msg.updated > 0 {
+		if msg.Removed > 0 || msg.Added > 0 || msg.Updated > 0 {
 			m.logf("refresh delta: kept %d · updated %d · added %d · removed %d",
-				msg.kept, msg.updated, msg.added, msg.removed)
+				msg.Kept, msg.Updated, msg.Added, msg.Removed)
 		}
 
-	case msgCancelled:
+	case progress.Cancelled:
 		m.logLine(logLineSkip.Render("cancelled"))
 		return m, tea.Quit
 
-	case msgDone:
+	case progress.Done:
 		m.finished = true
-		m.buildErr = msg.err
-		if msg.err != nil {
-			m.logLine(logLineSkip.Render("FAILED: " + msg.err.Error()))
+		m.buildErr = msg.Err
+		if msg.Err != nil {
+			m.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
 		} else if m.refreshStats != nil {
 			rs := m.refreshStats
 			m.logLine(styleOK.Render(fmt.Sprintf(
 				"done: %d tracks written (%d kept, %d updated, %d added, %d removed), %d skipped",
-				m.done, rs.kept, rs.updated, rs.added, rs.removed, m.skipped)))
+				m.done, rs.Kept, rs.Updated, rs.Added, rs.Removed, m.skipped)))
 		} else {
 			m.logLine(styleOK.Render(fmt.Sprintf("done: %d tracks written, %d skipped", m.done, m.skipped)))
 		}
@@ -340,7 +322,7 @@ func (m tuiModel) View() tea.View {
 		case 2:
 			glyph, st = "✔", styleOK.Render("done")
 		}
-		name, purpose := fileName(t), tagNames[t]
+		name, purpose := FileName(t), TagNames[t]
 		rows = append(rows, table.Row{glyph, name, purpose, st})
 	}
 	m.files.SetRows(rows)
@@ -397,7 +379,7 @@ func truncate(s string, w int) string {
 
 // runTUI drives the bubbletea interface; the job runs in a goroutine that
 // streams progress messages into the program.
-func runTUI(root string, job func(ctx context.Context, send func(any)), refresh bool) error {
+func Run(root string, job func(ctx context.Context, send func(any)), refresh bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := tea.NewProgram(newTUIModel(root, cancel, refresh))
 	go job(ctx, func(m any) { p.Send(m) })

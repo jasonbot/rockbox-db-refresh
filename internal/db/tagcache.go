@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"bufio"
@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"rbdb/internal/meta"
 )
 
 const (
@@ -66,10 +68,10 @@ const chunkLen = 8
 // silently wrapping and producing a corrupt database.
 const maxI32 = int64(math.MaxInt32)
 
-// maxStringTagLen caps non-path string tags (rune-safe). Paths are capped
-// separately and much higher: the device must be able to match them
-// verbatim against the filesystem during incremental updates.
-var maxStringTagLen = 512
+// MaxStringTagLen caps non-path string tags (rune-safe); bound to -max-tag.
+// Paths are capped separately and much higher: the device must be able to
+// match them verbatim against the filesystem during incremental updates.
+var MaxStringTagLen = 512
 
 const maxPathTagLen = 1024
 
@@ -82,7 +84,7 @@ func putU32le(b []byte, v uint32) {
 	binary.LittleEndian.PutUint32(b, v)
 }
 
-func tagValue(t *Track, tag int) string {
+func tagValue(t *meta.Track, tag int) string {
 	if tag == tagFilename {
 		return t.DevPath
 	}
@@ -120,7 +122,7 @@ func tagValue(t *Track, tag int) string {
 	return nonEmpty(sanitize(s))
 }
 
-func tagNumeric(t *Track, tag int) int32 {
+func tagNumeric(t *meta.Track, tag int) int32 {
 	switch tag {
 	case tagYear:
 		return clampI32(int64(t.Year))
@@ -230,7 +232,7 @@ type uniqEntry struct {
 // writeTagFile writes one database_<tag>.tcd and returns per-track seek
 // offsets. unique: deduplicate case-insensitively (idx_id=-1).
 // sorted: case-insensitive sort, <Untagged> first, records padded to 8 bytes.
-func writeTagFile(dir string, tag int, tracks []*Track, unique bool) ([]int32, error) {
+func writeTagFile(dir string, tag int, tracks []*meta.Track, unique bool) ([]int32, error) {
 	type rec struct {
 		str    string
 		idxIDs []int // master index ids referencing this record (-1 for unique)
@@ -241,7 +243,7 @@ func writeTagFile(dir string, tag int, tracks []*Track, unique bool) ([]int32, e
 	seeks := make([]int32, len(tracks))
 
 	for id, tr := range tracks {
-		limit := maxStringTagLen
+		limit := MaxStringTagLen
 		if tag == tagFilename {
 			limit = maxPathTagLen
 		}
@@ -347,7 +349,8 @@ type TagProgress func(tag int, done bool)
 
 // Build writes the complete tagcache database for tracks into dir,
 // reporting progress via onTag if non-nil.
-func Build(dir string, tracks []*Track, onTag TagProgress) error {
+// Build writes the complete tagcache database for tracks into dir.
+func Build(dir string, tracks []*meta.Track, onTag TagProgress) error {
 	n := len(tracks)
 
 	entries := make([]indexEntry, n)
