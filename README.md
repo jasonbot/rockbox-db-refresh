@@ -1,9 +1,136 @@
-# rbdb — build a Rockbox tagcache from Go
+# rbdb — Rockbox database builder and audio converter
 
-This is two things: notes on how Rockbox's music database works, and `rbdb`,
-a single static Go binary that builds one for you. Point it at a (mounted)
-player, it scans the music files, reads their metadata, and writes a complete
-database into `<root>/.rockbox/`.
+A single static Go binary that builds Rockbox tagcache databases, fixes MP3
+metadata/album art in-place, and syncs audio libraries between directories.
+No cgo, no external dependencies beyond ffmpeg (for MP3 encoding).
+
+## Commands
+
+```
+rbdb <command> [options]
+```
+
+| Command | Purpose                                                      |
+| ------- | ------------------------------------------------------------ |
+| `db`    | Build/update the `.rockbox/` tagcache database               |
+| `fix`   | Fix MP3 metadata and album art in-place                      |
+| `sync`  | Convert audio files from a source directory to a destination |
+
+### rbdb db
+
+Scans a Rockbox device root, reads metadata from all audio files, and writes a
+complete tagcache database to `<root>/.rockbox/`.
+
+```
+rbdb db [options] [root]
+```
+
+| Flag                 | Default | Effect                                                   |
+| -------------------- | ------- | -------------------------------------------------------- |
+| `-root DIR`          |         | device root directory (same as positional arg)           |
+| `-dry-run`           | off     | scan + parse only, write nothing                         |
+| `-refresh`           | off     | incremental update (reuse unchanged files, drop deleted) |
+| `-shuffle`           | off     | install a shuffled library playlist after building       |
+| `-shuffle-limit N`   | 9999    | max tracks in shuffled playlist                          |
+| `-shuffle-recency F` | 2.0     | recency bias (0 = uniform)                               |
+| `-max-tag BYTES`     | 512     | truncation limit for non-path string tags                |
+| `-no-tui`            | off     | plain progress output                                    |
+| `-v`                 | off     | verbose output                                           |
+
+Root resolution (when omitted): interactive filepicker (TUI) or last-used root
+from `~/.config/rockbox-db-refresh/last.txt` → `.`.
+
+```sh
+rbdb db /media/player              # TUI full rebuild
+rbdb db -refresh /media/player     # incremental update
+rbdb db -shuffle /media/player     # rebuild + shuffled playlist
+```
+
+### rbdb fix
+
+Fixes MP3 metadata and album art in-place using MusicBrainz for normalization
+and cover art fetching. Only processes files that need changes.
+
+```
+rbdb fix [options] <path>
+```
+
+| Flag              | Default | Effect                                              |
+| ----------------- | ------- | --------------------------------------------------- |
+| `-path DIR`       |         | directory containing MP3s                           |
+| `-dry-run`        | off     | scan only, write nothing                            |
+| `-normalize MODE` | none    | metadata normalization: `none`, `fill`, `overwrite` |
+| `-no-art`         | off     | skip cover art fetching                             |
+| `-min-score N`    | 50      | minimum MusicBrainz search score (0–100)            |
+| `-no-tui`         | off     | plain output                                        |
+| `-v`              | off     | verbose output                                      |
+
+- `fill` only fills empty fields (won't overwrite existing tags)
+- `overwrite` replaces all metadata with MusicBrainz data
+- Uses ffmpeg `-c copy` to rewrite tags without re-encoding audio
+
+```sh
+rbdb fix /path/to/mp3s             # interactive fix with defaults
+rbdb fix -normalize fill /music    # fill missing metadata + fetch art
+rbdb fix -normalize overwrite /music  # replace all metadata
+```
+
+### rbdb sync
+
+Converts audio files from an origin directory to a destination, transcoding to
+MP3 with optional MusicBrainz metadata normalization and cover art.
+
+```
+rbdb sync [options] <origin> <destination>
+```
+
+| Flag               | Default | Effect                                              |
+| ------------------ | ------- | --------------------------------------------------- |
+| `-origin DIR`      |         | source directory                                    |
+| `-destination DIR` |         | output directory                                    |
+| `-dry-run`         | off     | scan only                                           |
+| `-overwrite`       | off     | overwrite existing files                            |
+| `-delete`          | off     | remove destination files not in origin              |
+| `-update`          | off     | rebuild rockbox database after sync                 |
+| `-normalize MODE`  | none    | metadata normalization: `none`, `fill`, `overwrite` |
+| `-no-art`          | off     | skip cover art fetching                             |
+| `-min-score N`     | 50      | minimum MusicBrainz search score                    |
+| `-no-tui`          | off     | plain output                                        |
+| `-v`               | off     | verbose output                                      |
+
+```sh
+rbdb sync /music/library /mnt/player/Music
+rbdb sync -overwrite -normalize fill /music /mnt/player/Music
+```
+
+## MusicBrainz integration
+
+Both `fix` and `sync` can query the MusicBrainz Search API to:
+
+1. **Normalize metadata** — fill missing tags or overwrite with canonical data
+2. **Fetch album art** — download front cover from the Cover Art Archive
+
+A disk-backed cache (`~/.cache/rockbox-converter/musicbrainz/`) stores API
+responses (SHA256 keys, 30-day TTL). Rate limiting: 1 request/sec.
+
+## Metadata normalization modes
+
+- `none` — no MusicBrainz queries (default)
+- `fill` — fill empty fields only (artist, album, title)
+- `overwrite` — replace all metadata with MusicBrainz canonical data
+
+## TUI
+
+All commands show an interactive terminal UI when connected to a TTY (unless
+`-no-tui` or `-dry-run` is set). The TUI displays:
+
+- Progress bar with ETA
+- Live stats (parsed/skipped/failed)
+- Log pane with file-by-file status
+- Cancel button (press `c` or click)
+
+When the job finishes, the button turns green and the TUI waits for a keypress
+before exiting — you can review logs and stats at your leisure.
 
 ## How the on-device builder works
 
@@ -18,12 +145,7 @@ own `database_<tag>.tcd` (deduplicated and case-insensitively sorted, except
 filename which is dumped as-is), and numeric values go straight into the master
 index `database_idx.tcd` — where playcount/rating stats of previously deleted
 entries get resurrected by matching filename or artist+album+title CRC32
-hashes. The ASCII changelog `database_changelog.txt` is only an interchange
-format for runtime statistics; you don't need it for a working database.
-
-The Go port produces exactly what the device would after a complete rebuild
-(or an incremental merge with `-refresh`), so the firmware loads it directly
-and can later run its own incremental update on top.
+hashes.
 
 ### Files in `.rockbox/`
 
@@ -39,16 +161,6 @@ Non-numeric tags are 0..8 plus 12:
 2 genre       7 albumartist
 3 title       4 filename  <-- special: unsorted, not deduplicated
 ```
-
-Everything else is numeric and lives inline in the master index:
-
-```
-9 year         13 bitrate     16 rating       19 commitid      22 lastoffset
-10 discnumber  14 length(ms)  17 playtime     20 mtime
-11 tracknumber 15 playcount   18 lastplayed   21 lastelapsed
-```
-
-(`TAG_COUNT = 23`; see `enum tag_type` in `apps/tagcache.h`.)
 
 ### Binary layout
 
@@ -78,142 +190,30 @@ exactly `strlen(path)+1`, one record per track in master-index order.
 Unique tags (everything except title and filename) are deduplicated
 case-insensitively and stored case-insensitively sorted, with `<Untagged>`
 sorting before everything else; their records use `idx_id = -1`. Title is
-sorted but not unique; filename is neither. For every non-unique sorted-tag
-entry with `idx_id >= 0` (i.e. title) and every filename record,
-`indices[idx_id].tag_seek[tag]` must point at exactly that record —
-`load_tagcache()`/`check_all_headers()` enforce all of this at boot, and any
-violation disables the DB until rebuild.
+sorted but not unique; filename is neither.
 
-Scanning applies some fallbacks (mirroring `add_tagcache()`): empty/missing
-tags become `<Untagged>`, canonicalartist falls back to albumartist, grouping
-falls back to *title* (!), missing tracknumber is `-1` and discnumber is `0`,
-mtime is the file's unix mtime.
-
-Master `datasize` is `24 + 96*entry_count + Σ datasize(database_<N>.tcd)` over
-all non-numeric tags except filename.
-
-At boot the firmware checks all headers; if they pass the DB is ready and can
-be loaded wholesale into RAM (ramcache). If `database_tmp.tcd` exists from an
-interrupted commit, the user gets asked whether to finish it. With auto-update
-enabled, the device can rescan and append/delete incrementally afterwards — a
-pre-built external DB participates just like a native one.
-
-## The Go port
-
-```sh
-go build -o rbdb .            # inside utils/tagcache-go
-```
-
-### Usage
+## Layout
 
 ```
-rbdb [flags] [root]
-```
-
-`root` is the device root (mount point). Resolution order when omitted:
-explicit flag/arg → interactive filepicker (TUI) or last-used root from the
-cache (non-TUI) → `.`. The cache lives at
-`~/.config/rockbox-db-refresh/last.txt`; every run with a valid root rewrites
-it.
-
-| Flag | Default | Effect |
-|---|---|---|
-| `-root DIR` | | device root directory (same as positional arg) |
-| `-dry-run` | off | scan + parse only, write nothing |
-| `-refresh` | off | incremental update, see below |
-| `-shuffle` | off | install a shuffled library playlist after building, see below |
-| `-shuffle-limit N` | 9999 | max tracks in the shuffled playlist (firmware default cap is 10000) |
-| `-shuffle-recency F` | 2.0 | recency bias strength for `-shuffle`; 0 = uniform shuffle |
-| `-max-tag BYTES` | 512 | rune-safe truncation for non-path string tags; paths keep up to 1024 bytes |
-| `-no-tui` | off | plain progress output (also used automatically when piped) |
-| `-v` | off | verbose output |
-
-### Patterns
-
-```sh
-./rbdb /media/player              # TUI full rebuild of <root>/.rockbox
-./rbdb -refresh /media/player     # incremental: parse only new/changed files
-./rbdb -dry-run -refresh /media/player  # preview the kept/updated/added/removed delta
-./rbdb -shuffle /media/player     # rebuild + install shuffled playlist
-./rbdb -no-tui /media/player      # non-interactive (cron etc.)
-```
-
-Without an explicit root on a TTY, a filepicker opens at the last-used
-directory (`d` picks the current dir, `enter` selects/open, `q` quits); the
-build never auto-starts. Non-TUI runs without a root silently default to the
-cached one.
-
-### Scan
-
-`<root>` is walked recursively, skipping dot-directories. Picked extensions:
-mp3 mp2 flac ogg oga opus m4a m4b mp4 ape mpc wv. Metadata parsing covers
-ID3v1/v2.2–2.4 (incl. unsync), APEv2, FLAC/Vorbis comments, Ogg Vorbis/Opus
-comments and MP4/iTunes atoms (incl. trailing-`moov` layouts); duration and
-bitrate come from FLAC STREAMINFO, MPEG frames/Xing, Ogg granule positions or
-MP4 `mvhd` where available. Stored paths are device paths like
-`/Music/foo.mp3`, derived from the file's location below the root.
-
-### What gets written
-
-- `database_idx.tcd`, `database_0..8.tcd`, `database_12.tcd` — the database,
-  exactly what the device would produce after a complete rebuild; stale
-  `database_tmp.tcd` is removed.
-- With `-shuffle`: `dynamic.m3u8` (shuffled library, capped by
-  `-shuffle-limit`) plus `.playlist_control` referencing it — the same pair
-  the firmware uses for the current dynamic playlist, so the player boots
-  into the shuffled library as its current playlist (actually resuming
-  playback still depends on autoresume/bookmark settings).
-  `added.tsv` records per-track add dates for stable shuffle ordering.
-- Elsewhere: `~/.config/rockbox-db-refresh/last.txt` remembers the root.
-
-### Refresh (`-refresh`)
-
-The previous database is read back and merged with a fresh scan:
-
-- files whose device path exists **and** whose mtime is unchanged are carried
-  over without parsing — play counts, ratings, playtime and other runtime
-  statistics survive;
-- changed or new files are re-parsed; paths no longer found are dropped;
-- if no usable existing database is present it degrades to a full rebuild.
-
-### Shuffle (`-shuffle`)
-
-Recency-weighted random permutation (Efraimidis–Spirakis): tracks ranked by
-add date get weight `1/(rank+1)^-shuffle-recency` and are sampled without
-replacement, so recently added music drifts toward the front while every
-ordering stays possible. Add dates are seeded from each file's ctime on first
-sight and then kept stable across refreshes in `.rockbox/added.tsv` (ctime
-changes whenever a tag is rewritten; the add date shouldn't).
-`-shuffle-recency 0` gives a uniform shuffle.
-
-The TUI shows an overall progress bar with ETA, live parsed/skipped/kept
-counts, a status table of all output files, a log pane (skipped files, refresh
-delta), and a cancel button (`c`); cancellation stops cleanly at the next file
-boundary without writing anything.
-
-Robustness: strings are sanitized to C-string semantics (truncated at embedded
-NULs, control chars stripped, trimmed) so dedup/sort/record sizes match what
-the firmware reads back. Malformed files are logged as `SKIP`, never abort the
-run. All on-disk fields are 32-bit by definition; offsets and sizes are
-checked against that ceiling instead of wrapping.
-
-Pure Go stdlib, no cgo, single static binary.
-
-### Layout
-
-```
-main.go                  flags, scan/refresh pipeline, wiring
+main.go                  entry point
+cmd/                     CLI subcommands (db, fix, sync) via urfave/cli
 internal/meta/           Track type + tag parsers (ID3, APE, FLAC/Vorbis, Ogg, MP4)
 internal/db/             tagcache writer (Build) and reader (ReadDatabase)
 internal/shuffle/        shuffled playlist install, recency weighting, added.tsv store
-internal/tui/            build-progress screen and root filepicker
+internal/tui/            interactive terminal UI (progress, log, cancel)
 internal/config/         last-root cache
-internal/progress/       message types piped from the pipeline to the UIs
+internal/progress/       message types piped from pipeline to UIs
+internal/convert/        ffmpeg-based MP3 encoding
+internal/walker/         directory walking and file discovery
+internal/artwork/        cover art processing and ID3 APIC embedding
+internal/musicbrainz/    MusicBrainz API client, cover art archive, metadata normalization
 ```
 
-Known gaps vs. the C implementation: no duration parsing for APE/MPC/WV (they
-get length 0), legacy codepages (e.g. Shift-JIS tags) are stored verbatim as
-bytes, rendered however the player's codepage setting says. `-refresh` keys
-reuse off mtime only — touching a file without changing its tags forces a
-re-parse (harmless, just slower); statistics of files that fail to re-parse
-are lost.
+## Building
+
+```sh
+go build -o rbdb .
+```
+
+Pure Go stdlib (plus bubbletea for TUI and urfave/cli for argument parsing),
+no cgo, single static binary. Requires ffmpeg on `$PATH for MP3 encoding.

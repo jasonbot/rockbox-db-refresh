@@ -28,6 +28,9 @@ type Track struct {
 	LengthMS int64
 	Bitrate  int // kbps, 0 = unknown
 
+	CoverArt    []byte // embedded cover art (raw image bytes)
+	CoverArtMIME string // MIME type of CoverArt (e.g. "image/jpeg")
+
 	// Runtime statistics; zero unless restored by -refresh from an
 	// existing database.
 	Playcount   int64

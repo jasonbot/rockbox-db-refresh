@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 // tickMsg drives periodic UI refreshes.
 type tickMsg struct{}
 
+// finishedMsg is sent after a brief delay so the TUI can render the
+// final state before the program exits.
+type finishedMsg struct{}
+
 var (
 	styleTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
@@ -27,6 +32,7 @@ var (
 	styleBad    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	buttonStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("124"))
 	buttonHot   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("196"))
+	buttonDone  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("34"))
 	logLineSkip = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	logLineDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
@@ -48,89 +54,44 @@ func FileName(tag int) string {
 	return fmt.Sprintf("database_%d.tcd", tag)
 }
 
-type tuiModel struct {
-	root     string
-	cancelFn context.CancelFunc
-	refresh  bool
-
-	found, done, skipped, kept int
-	current                    string
-	start                      time.Time
-
-	refreshStats *progress.Refresh // set once the job reports the final delta
-
-	tagState map[int]int // -1..12 -> 0 pending, 1 writing, 2 done
-
-	logLines []string
-	vp       viewport.Model
-	bar      bubblesprogress.Model
-	files    table.Model
-
-	width, height int
-	btnX0, btnX1  int
-	cancelling    bool
-	finished      bool
-	buildErr      error
-	wasAtBottom   bool
+// baseTUI holds shared state and methods for all TUI models.
+type baseTUI struct {
+	cancelFn   context.CancelFunc
+	found      int
+	done       int
+	skipped    int
+	failed     int
+	current    string
+	start      time.Time
+	logLines   []string
+	vp         viewport.Model
+	bar        bubblesprogress.Model
+	width      int
+	height     int
+	btnX0      int
+	btnX1      int
+	cancelling bool
+	finished   bool
+	buildErr   error
+	wasAtBottom bool
 }
 
-func newTUIModel(root string, cancelFn context.CancelFunc, refresh bool) tuiModel {
-	m := tuiModel{
-		root:     root,
+func newBaseTUI(cancelFn context.CancelFunc) baseTUI {
+	m := baseTUI{
 		cancelFn: cancelFn,
-		refresh:  refresh,
 		start:    time.Now(),
-		tagState: make(map[int]int),
 		bar:      bubblesprogress.New(bubblesprogress.WithWidth(34)),
-	}
-	for _, t := range tagFiles {
-		m.tagState[t] = 0
 	}
 	m.vp = viewport.New()
 	m.vp.MouseWheelEnabled = true
-
-	cols := []table.Column{
-		{Title: " ", Width: 2}, // room for single- and double-width glyphs
-		{Title: "output file", Width: 18},
-		{Title: "tag", Width: 17},
-		{Title: "status", Width: 9},
-	}
-	w := 0
-	for _, c := range cols {
-		w += c.Width + 2 // cell padding
-	}
-	m.files = table.New(
-		table.WithColumns(cols),
-		table.WithHeight(len(tagFiles)+1), // rows + header
-		table.WithWidth(w),
-	)
-	st := table.DefaultStyles()
-	st.Selected = lipgloss.NewStyle() // nothing selectable: render identically
-	m.files.SetStyles(st)
-
-	m.logLine(styleDim.Render("scanning " + root + " …"))
 	return m
 }
 
-// eta estimates remaining time from the average parse rate so far.
-func eta(elapsed time.Duration, done, total int) string {
-	if done <= 0 || total <= 0 || done >= total || elapsed <= 0 {
-		return ""
-	}
-	rate := float64(done) / elapsed.Seconds()
-	if rate <= 0 {
-		return ""
-	}
-	return (time.Duration(float64(total-done)/rate) * time.Second).Round(time.Second).String()
+func (m *baseTUI) logf(format string, args ...any) {
+	m.logLine(fmt.Sprintf(format, args...))
 }
 
-func (m *tuiModel) logf(format string, args ...any) {
-	var line string
-	if len(args) == 0 {
-		line = format
-	} else {
-		line = fmt.Sprintf(format, args...)
-	}
+func (m *baseTUI) logLine(line string) {
 	m.logLines = append(m.logLines, line)
 	if len(m.logLines) > 2000 {
 		m.logLines = m.logLines[len(m.logLines)-1000:]
@@ -142,150 +103,81 @@ func (m *tuiModel) logf(format string, args ...any) {
 	}
 }
 
-// logLine appends an already-formatted line.
-func (m *tuiModel) logLine(line string) {
-	m.logLines = append(m.logLines, line)
-	if len(m.logLines) > 2000 {
-		m.logLines = m.logLines[len(m.logLines)-1000:]
-	}
-	m.wasAtBottom = m.vp.AtBottom()
-	m.vp.SetContent(strings.Join(m.logLines, "\n"))
-	if m.wasAtBottom {
-		m.vp.GotoBottom()
-	}
-}
-
-func (m tuiModel) Init() tea.Cmd {
+func (m *baseTUI) handleTick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tickMsg:
-		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return tickMsg{} })
-
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.vp.SetWidth(m.width - 2)
-		m.vp.SetHeight(max(3, m.height/2-2))
-		return m, nil
-
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			if m.cancelFn != nil && !m.finished {
-				m.cancelling = true
-				m.cancelFn()
-			}
-			return m, tea.Quit
-		case "c":
-			if !m.cancelling && !m.finished {
-				m.cancelling = true
-				m.logLine(logLineDim.Render("cancel requested…"))
-				m.cancelFn()
-			}
-			return m, nil
-		default:
-			var cmd tea.Cmd
-			m.vp, cmd = m.vp.Update(msg)
-			return m, cmd
-		}
-
-	case tea.MouseClickMsg:
-		mouse := msg.Mouse()
-		if msg.Button == tea.MouseLeft &&
-			mouse.Y == m.height-1 && mouse.X >= m.btnX0 && mouse.X <= m.btnX1 {
-			if !m.cancelling && !m.finished {
-				m.cancelling = true
-				m.cancelFn()
-			} else if m.finished {
-				return m, tea.Quit
-			}
-		}
-		var cmd tea.Cmd
-		m.vp, cmd = m.vp.Update(msg)
-		return m, cmd
-
-	case tea.MouseWheelMsg, tea.KeyMsg:
-		var cmd tea.Cmd
-		m.vp, cmd = m.vp.Update(msg)
-		return m, cmd
-
-	case progress.Found:
-		m.found = msg.N
-		m.logf("found %d candidate audio files", msg.N)
-
-	case progress.Parse:
-		m.done, m.found = msg.Done, msg.Total
-		m.current = msg.Path
-		if msg.Reused {
-			m.kept++
-		}
-		if m.done%2000 == 0 {
-			m.logLine(logLineDim.Render(fmt.Sprintf("parsed %d/%d", m.done, m.found)))
-		}
-
-	case progress.Skip:
-		m.skipped++
-		m.logLine(logLineSkip.Render(fmt.Sprintf("SKIP %s (%v)", msg.Path, msg.Err)))
-
-	case progress.TagStart:
-		m.tagState[msg.Tag] = 1
-		name, _ := TagNames[msg.Tag]
-		m.logLine(logLineDim.Render("writing " + FileName(msg.Tag) + " (" + name + ")"))
-
-	case progress.TagDone:
-		m.tagState[msg.Tag] = 2
-
-	case progress.Shuffle:
-		if msg.Err != nil {
-			m.logLine(logLineSkip.Render(fmt.Sprintf("SHUFFLE FAILED: %v", msg.Err)))
-		} else {
-			m.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.N, shuffle.PlaylistFile)))
-		}
-
-	case progress.Refresh:
-		m.refreshStats = &msg
-		if msg.Removed > 0 || msg.Added > 0 || msg.Updated > 0 {
-			m.logf("refresh delta: kept %d · updated %d · added %d · removed %d",
-				msg.Kept, msg.Updated, msg.Added, msg.Removed)
-		}
-
-	case progress.Cancelled:
-		m.logLine(logLineSkip.Render("cancelled"))
-		return m, tea.Quit
-
-	case progress.Done:
-		m.finished = true
-		m.buildErr = msg.Err
-		if msg.Err != nil {
-			m.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
-		} else if m.refreshStats != nil {
-			rs := m.refreshStats
-			m.logLine(styleOK.Render(fmt.Sprintf(
-				"done: %d tracks written (%d kept, %d updated, %d added, %d removed), %d skipped",
-				m.done, rs.Kept, rs.Updated, rs.Added, rs.Removed, m.skipped)))
-		} else {
-			m.logLine(styleOK.Render(fmt.Sprintf("done: %d tracks written, %d skipped", m.done, m.skipped)))
-		}
-		return m, tea.Quit
-	}
-	return m, nil
+func (m *baseTUI) handleWindowSize(msg tea.WindowSizeMsg) {
+	m.width, m.height = msg.Width, msg.Height
+	m.vp.SetWidth(m.width - 2)
+	m.vp.SetHeight(max(3, m.height/2-2))
 }
 
-func (m tuiModel) View() tea.View {
-	var b strings.Builder
-	subtitle := "  ·  tagcache writer"
-	if m.refresh {
-		subtitle = "  ·  incremental update"
+func (m *baseTUI) handleKeyPress(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		if m.finished {
+			return tea.Quit, true
+		}
+		if m.cancelFn != nil && !m.cancelling {
+			m.cancelling = true
+			m.cancelFn()
+		}
+		return nil, true
+	case "enter", "esc", " ":
+		if m.finished {
+			return tea.Quit, true
+		}
+	case "c":
+		if !m.cancelling && !m.finished {
+			m.cancelling = true
+			m.logLine(logLineDim.Render("cancel requested…"))
+			m.cancelFn()
+		}
+		return nil, true
 	}
-	b.WriteString(styleTitle.Render("Rockbox Database Builder") + styleDim.Render(subtitle) + "\n")
-	root := m.root
-	if len(root) > m.width-10 && m.width > 20 {
-		root = "…" + root[len(root)-(m.width-10):]
-	}
-	b.WriteString(styleDim.Render("root: ") + root + "\n\n")
+	var cmd tea.Cmd
+	m.vp, cmd = m.vp.Update(msg)
+	return cmd, false
+}
 
+func (m *baseTUI) handleMouseClick(msg tea.MouseClickMsg) tea.Cmd {
+	mouse := msg.Mouse()
+	if msg.Button == tea.MouseLeft &&
+		mouse.Y == m.height-1 && mouse.X >= m.btnX0 && mouse.X <= m.btnX1 {
+		if !m.cancelling && !m.finished {
+			m.cancelling = true
+			m.cancelFn()
+		} else if m.finished {
+			return tea.Quit
+		}
+	}
+	var cmd tea.Cmd
+	m.vp, cmd = m.vp.Update(msg)
+	return cmd
+}
+
+func (m *baseTUI) handleMouseWheelKey(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	m.vp, cmd = m.vp.Update(msg)
+	return cmd
+}
+
+func (m *baseTUI) handleCancelled() tea.Cmd {
+	m.logLine(logLineSkip.Render("cancelled"))
+	return tea.Quit
+}
+
+func (m *baseTUI) handleDone(msg progress.Done) tea.Cmd {
+	m.finished = true
+	m.buildErr = msg.Err
+	if msg.Err != nil {
+		m.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
+	}
+	return m.handleTick()
+}
+
+func (m *baseTUI) renderProgressBar() string {
 	pct := 0.0
 	if m.found > 0 {
 		pct = float64(m.done) / float64(m.found)
@@ -301,12 +193,232 @@ func (m tuiModel) View() tea.View {
 	if m.cancelling {
 		line += "  (cancelling)"
 	}
-	b.WriteString(line + "\n")
-	b.WriteString(styleDim.Render("current: ") + truncate(m.current, max(0, m.width-12)) + "\n")
+	return line
+}
+
+func (m *baseTUI) renderCurrentLine() string {
+	return styleDim.Render("current: ") + truncate(m.current, max(0, m.width-12))
+}
+
+func (m *baseTUI) renderLogAndButton() string {
+	var b strings.Builder
+	b.WriteString("log ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
+
+	topLines := strings.Count(b.String(), "\n")
+	vpH := max(3, m.height-topLines-1)
+	m.vp.SetHeight(vpH)
+	b.WriteString(m.vp.View() + "\n")
+
+	label := "  ✖  CANCEL   press c · or click  "
+	if m.cancelling {
+		label = "  ⏳ CANCELLING…  "
+	}
+	if m.finished {
+		if m.buildErr != nil {
+			label = "  ✖  FAILED   press any key to exit  "
+		} else {
+			label = "  ✔  DONE   press any key to exit  "
+		}
+	}
+	style := buttonStyle
+	if m.cancelling {
+		style = buttonHot
+	}
+	if m.finished {
+		if m.buildErr != nil {
+			style = buttonHot
+		} else {
+			style = buttonDone
+		}
+	}
+	styled := style.Bold(true).Render(label)
+	runes := []rune(label)
+	pad := max(0, m.width-len(runes))
+	left := pad / 2
+	btnLine := strings.Repeat(" ", left) + styled
+	m.btnX0, m.btnX1 = left, left+len(runes)-1
+	for len([]rune(btnLine)) < m.width {
+		btnLine += " "
+	}
+	b.WriteString(btnLine)
+	return b.String()
+}
+
+// eta estimates remaining time from the average parse rate so far.
+func eta(elapsed time.Duration, done, total int) string {
+	if done <= 0 || total <= 0 || done >= total || elapsed <= 0 {
+		return ""
+	}
+	rate := float64(done) / elapsed.Seconds()
+	if rate <= 0 {
+		return ""
+	}
+	return (time.Duration(float64(total-done)/rate) * time.Second).Round(time.Second).String()
+}
+
+func truncate(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= w {
+		return s
+	}
+	return "…" + string(r[len(r)-w+1:])
+}
+
+// ---- DB model (original) ---------------------------------------------------
+
+type tuiModel struct {
+	base         baseTUI
+	root         string
+	refresh      bool
+	kept         int
+	refreshStats *progress.Refresh
+	tagState     map[int]int
+	files        table.Model
+}
+
+func newTUIModel(root string, cancelFn context.CancelFunc, refresh bool) tuiModel {
+	m := tuiModel{
+		base:     newBaseTUI(cancelFn),
+		root:     root,
+		refresh:  refresh,
+		tagState: make(map[int]int),
+	}
+	for _, t := range tagFiles {
+		m.tagState[t] = 0
+	}
+
+	cols := []table.Column{
+		{Title: " ", Width: 2},
+		{Title: "output file", Width: 18},
+		{Title: "tag", Width: 17},
+		{Title: "status", Width: 9},
+	}
+	w := 0
+	for _, c := range cols {
+		w += c.Width + 2
+	}
+	m.files = table.New(
+		table.WithColumns(cols),
+		table.WithHeight(len(tagFiles)+1),
+		table.WithWidth(w),
+	)
+	st := table.DefaultStyles()
+	st.Selected = lipgloss.NewStyle()
+	m.files.SetStyles(st)
+
+	m.base.logLine(styleDim.Render("scanning " + root + " …"))
+	return m
+}
+
+func (m tuiModel) Init() tea.Cmd {
+	return m.base.handleTick()
+}
+
+func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		return m, m.base.handleTick()
+
+	case tea.WindowSizeMsg:
+		m.base.handleWindowSize(msg)
+		return m, nil
+
+	case tea.KeyPressMsg:
+		cmd, handled := m.base.handleKeyPress(msg)
+		if handled {
+			return m, cmd
+		}
+		return m, cmd
+
+	case tea.MouseClickMsg:
+		return m, m.base.handleMouseClick(msg)
+
+	case tea.MouseWheelMsg, tea.KeyMsg:
+		return m, m.base.handleMouseWheelKey(msg)
+
+	case progress.Found:
+		m.base.found = msg.N
+		m.base.logf("found %d candidate audio files", msg.N)
+
+	case progress.Parse:
+		m.base.done, m.base.found = msg.Done, msg.Total
+		m.base.current = msg.Path
+		if msg.Reused {
+			m.kept++
+		}
+		if m.base.done%2000 == 0 {
+			m.base.logLine(logLineDim.Render(fmt.Sprintf("parsed %d/%d", m.base.done, m.base.found)))
+		}
+
+	case progress.Skip:
+		m.base.skipped++
+		m.base.logLine(logLineSkip.Render(fmt.Sprintf("SKIP %s (%v)", msg.Path, msg.Err)))
+
+	case progress.TagStart:
+		m.tagState[msg.Tag] = 1
+		name, _ := TagNames[msg.Tag]
+		m.base.logLine(logLineDim.Render("writing " + FileName(msg.Tag) + " (" + name + ")"))
+
+	case progress.TagDone:
+		m.tagState[msg.Tag] = 2
+
+	case progress.Shuffle:
+		if msg.Err != nil {
+			m.base.logLine(logLineSkip.Render(fmt.Sprintf("SHUFFLE FAILED: %v", msg.Err)))
+		} else {
+			m.base.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.N, shuffle.PlaylistFile)))
+		}
+
+	case progress.Refresh:
+		m.refreshStats = &msg
+		if msg.Removed > 0 || msg.Added > 0 || msg.Updated > 0 {
+			m.base.logf("refresh delta: kept %d · updated %d · added %d · removed %d",
+				msg.Kept, msg.Updated, msg.Added, msg.Removed)
+		}
+
+	case progress.Cancelled:
+		return m, m.base.handleCancelled()
+
+	case progress.Done:
+		m.base.finished = true
+		m.base.buildErr = msg.Err
+		if msg.Err != nil {
+			m.base.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
+		} else if m.refreshStats != nil {
+			rs := m.refreshStats
+			m.base.logLine(styleOK.Render(fmt.Sprintf(
+				"done: %d tracks written (%d kept, %d updated, %d added, %d removed), %d skipped",
+				m.base.done, rs.Kept, rs.Updated, rs.Added, rs.Removed, m.base.skipped)))
+		} else {
+			m.base.logLine(styleOK.Render(fmt.Sprintf("done: %d tracks written, %d skipped", m.base.done, m.base.skipped)))
+		}
+		return m, m.base.handleTick()
+	}
+	return m, nil
+}
+
+func (m tuiModel) View() tea.View {
+	var b strings.Builder
+	subtitle := "  ·  tagcache writer"
+	if m.refresh {
+		subtitle = "  ·  incremental update"
+	}
+	b.WriteString(styleTitle.Render("Rockbox Database Builder") + styleDim.Render(subtitle) + "\n")
+	root := m.root
+	if len(root) > m.base.width-10 && m.base.width > 20 {
+		root = "…" + root[len(root)-(m.base.width-10):]
+	}
+	b.WriteString(styleDim.Render("root: ") + root + "\n\n")
+
+	b.WriteString(m.base.renderProgressBar() + "\n")
+	b.WriteString(m.base.renderCurrentLine() + "\n")
 	stats := fmt.Sprintf("parsed %s  skipped %s  elapsed %s",
-		styleOK.Render(fmt.Sprint(m.done)),
-		styleBad.Render(fmt.Sprint(m.skipped)),
-		styleDim.Render(time.Since(m.start).Round(time.Second).String()))
+		styleOK.Render(fmt.Sprint(m.base.done)),
+		styleBad.Render(fmt.Sprint(m.base.skipped)),
+		styleDim.Render(time.Since(m.base.start).Round(time.Second).String()))
 	if m.refresh {
 		stats += styleDim.Render(fmt.Sprintf("  kept %s", styleOK.Render(fmt.Sprint(m.kept))))
 	}
@@ -328,36 +440,7 @@ func (m tuiModel) View() tea.View {
 	m.files.SetRows(rows)
 	b.WriteString(m.files.View() + "\n")
 
-	b.WriteString("log ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
-
-	// Size the log viewport from the actual number of rows already emitted,
-	// leaving exactly one row for the button bar at the bottom.
-	topLines := strings.Count(b.String(), "\n")
-	vpH := max(3, m.height-topLines-1)
-	m.vp.SetHeight(vpH)
-	b.WriteString(m.vp.View() + "\n")
-
-	label := "  ✖  CANCEL   press c · or click  "
-	if m.cancelling {
-		label = "  ⏳ CANCELLING…  "
-	}
-	if m.finished {
-		label = "  ✔  DONE   press q to exit  "
-	}
-	style := buttonStyle
-	if m.cancelling {
-		style = buttonHot
-	}
-	styled := style.Bold(true).Render(label)
-	runes := []rune(label)
-	pad := max(0, m.width-len(runes))
-	left := pad / 2
-	btnLine := strings.Repeat(" ", left) + styled
-	m.btnX0, m.btnX1 = left, left+len(runes)-1
-	for len([]rune(btnLine)) < m.width {
-		btnLine += " "
-	}
-	b.WriteString(btnLine)
+	b.WriteString(m.base.renderLogAndButton())
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -366,22 +449,252 @@ func (m tuiModel) View() tea.View {
 	return v
 }
 
-func truncate(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	return "…" + string(r[len(r)-w+1:])
+// ---- Fix model -------------------------------------------------------------
+
+type fixTUIModel struct {
+	base baseTUI
+	dir  string
 }
 
-// runTUI drives the bubbletea interface; the job runs in a goroutine that
-// streams progress messages into the program.
+func newFixTUIModel(dir string, cancelFn context.CancelFunc) fixTUIModel {
+	m := fixTUIModel{
+		base: newBaseTUI(cancelFn),
+		dir:  dir,
+	}
+	m.base.logLine(styleDim.Render("fixing MP3s in " + dir + " …"))
+	return m
+}
+
+func (m fixTUIModel) Init() tea.Cmd {
+	return m.base.handleTick()
+}
+
+func (m fixTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		return m, m.base.handleTick()
+
+	case tea.WindowSizeMsg:
+		m.base.handleWindowSize(msg)
+		return m, nil
+
+	case tea.KeyPressMsg:
+		cmd, handled := m.base.handleKeyPress(msg)
+		if handled {
+			return m, cmd
+		}
+		return m, cmd
+
+	case tea.MouseClickMsg:
+		return m, m.base.handleMouseClick(msg)
+
+	case tea.MouseWheelMsg, tea.KeyMsg:
+		return m, m.base.handleMouseWheelKey(msg)
+
+	case progress.Found:
+		m.base.found = msg.N
+		m.base.logLine(fmt.Sprintf("found %d MP3 files", msg.N))
+
+	case progress.FileStart:
+		m.base.done = msg.Done
+		m.base.current = msg.Path
+
+	case progress.FileDone:
+		if msg.Err != nil {
+			m.base.failed++
+			m.base.logLine(logLineSkip.Render(fmt.Sprintf("ERROR %s: %v", filepath.Base(msg.Path), msg.Err)))
+		} else if msg.Skipped {
+			m.base.skipped++
+		}
+
+	case progress.ArtworkFetched:
+		m.base.logLine(styleOK.Render(fmt.Sprintf("art fetched: %s", filepath.Base(msg.Path))))
+
+	case progress.MetadataNormalized:
+		m.base.logLine(styleOK.Render(fmt.Sprintf("normalized: %s", filepath.Base(msg.Path))))
+
+	case progress.Cancelled:
+		return m, m.base.handleCancelled()
+
+	case progress.Done:
+		m.base.finished = true
+		m.base.buildErr = msg.Err
+		if msg.Err != nil {
+			m.base.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
+		} else {
+			m.base.logLine(styleOK.Render(fmt.Sprintf("done: %d processed, %d skipped, %d failed",
+				m.base.done, m.base.skipped, m.base.failed)))
+		}
+		return m, m.base.handleTick()
+	}
+	return m, nil
+}
+
+func (m fixTUIModel) View() tea.View {
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("Rockbox Fixer") + styleDim.Render("  ·  in-place MP3 repair") + "\n")
+	dir := m.dir
+	if len(dir) > m.base.width-10 && m.base.width > 20 {
+		dir = "…" + dir[len(dir)-(m.base.width-10):]
+	}
+	b.WriteString(styleDim.Render("dir: ") + dir + "\n\n")
+
+	b.WriteString(m.base.renderProgressBar() + "\n")
+	b.WriteString(m.base.renderCurrentLine() + "\n")
+	stats := fmt.Sprintf("processed %s  skipped %s  failed %s  elapsed %s",
+		styleOK.Render(fmt.Sprint(m.base.done)),
+		styleDim.Render(fmt.Sprint(m.base.skipped)),
+		styleBad.Render(fmt.Sprint(m.base.failed)),
+		styleDim.Render(time.Since(m.base.start).Round(time.Second).String()))
+	b.WriteString(stats + "\n\n")
+
+	b.WriteString(m.base.renderLogAndButton())
+
+	v := tea.NewView(b.String())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = "rbdb — rockbox fixer"
+	return v
+}
+
+// ---- Sync model ------------------------------------------------------------
+
+type syncTUIModel struct {
+	base   baseTUI
+	origin string
+	dest   string
+}
+
+func newSyncTUIModel(origin, dest string, cancelFn context.CancelFunc) syncTUIModel {
+	m := syncTUIModel{
+		base:   newBaseTUI(cancelFn),
+		origin: origin,
+		dest:   dest,
+	}
+	m.base.logLine(styleDim.Render("syncing " + origin + " → " + dest + " …"))
+	return m
+}
+
+func (m syncTUIModel) Init() tea.Cmd {
+	return m.base.handleTick()
+}
+
+func (m syncTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		return m, m.base.handleTick()
+
+	case tea.WindowSizeMsg:
+		m.base.handleWindowSize(msg)
+		return m, nil
+
+	case tea.KeyPressMsg:
+		cmd, handled := m.base.handleKeyPress(msg)
+		if handled {
+			return m, cmd
+		}
+		return m, cmd
+
+	case tea.MouseClickMsg:
+		return m, m.base.handleMouseClick(msg)
+
+	case tea.MouseWheelMsg, tea.KeyMsg:
+		return m, m.base.handleMouseWheelKey(msg)
+
+	case progress.Found:
+		m.base.found = msg.N
+		m.base.logLine(fmt.Sprintf("found %d files to sync", msg.N))
+
+	case progress.FileStart:
+		m.base.done = msg.Done
+		m.base.current = msg.Path
+
+	case progress.FileDone:
+		if msg.Err != nil {
+			m.base.failed++
+			m.base.logLine(logLineSkip.Render(fmt.Sprintf("ERROR %s: %v", filepath.Base(msg.Path), msg.Err)))
+		} else if msg.Skipped {
+			m.base.skipped++
+		}
+
+	case progress.ArtworkFetched:
+		m.base.logLine(styleOK.Render(fmt.Sprintf("art fetched: %s", filepath.Base(msg.Path))))
+
+	case progress.MetadataNormalized:
+		m.base.logLine(styleOK.Render(fmt.Sprintf("normalized: %s", filepath.Base(msg.Path))))
+
+	case progress.Cancelled:
+		return m, m.base.handleCancelled()
+
+	case progress.Done:
+		m.base.finished = true
+		m.base.buildErr = msg.Err
+		if msg.Err != nil {
+			m.base.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
+		} else {
+			m.base.logLine(styleOK.Render(fmt.Sprintf("done: %d synced, %d skipped, %d failed",
+				m.base.done, m.base.skipped, m.base.failed)))
+		}
+		return m, m.base.handleTick()
+	}
+	return m, nil
+}
+
+func (m syncTUIModel) View() tea.View {
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("Rockbox Syncer") + styleDim.Render("  ·  source → destination conversion") + "\n")
+	origin := m.origin
+	if len(origin) > m.base.width-20 && m.base.width > 30 {
+		origin = "…" + origin[len(origin)-(m.base.width-20):]
+	}
+	b.WriteString(styleDim.Render("origin: ") + origin + "\n")
+	dest := m.dest
+	if len(dest) > m.base.width-14 && m.base.width > 24 {
+		dest = "…" + dest[len(dest)-(m.base.width-14):]
+	}
+	b.WriteString(styleDim.Render("dest:   ") + dest + "\n\n")
+
+	b.WriteString(m.base.renderProgressBar() + "\n")
+	b.WriteString(m.base.renderCurrentLine() + "\n")
+	stats := fmt.Sprintf("synced %s  skipped %s  failed %s  elapsed %s",
+		styleOK.Render(fmt.Sprint(m.base.done)),
+		styleDim.Render(fmt.Sprint(m.base.skipped)),
+		styleBad.Render(fmt.Sprint(m.base.failed)),
+		styleDim.Render(time.Since(m.base.start).Round(time.Second).String()))
+	b.WriteString(stats + "\n\n")
+
+	b.WriteString(m.base.renderLogAndButton())
+
+	v := tea.NewView(b.String())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = "rbdb — rockbox syncer"
+	return v
+}
+
+// ---- Public runners --------------------------------------------------------
+
 func Run(root string, job func(ctx context.Context, send func(any)), refresh bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := tea.NewProgram(newTUIModel(root, cancel, refresh))
+	go job(ctx, func(m any) { p.Send(m) })
+	_, err := p.Run()
+	cancel()
+	return err
+}
+
+func RunFix(dir string, job func(ctx context.Context, send func(any))) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := tea.NewProgram(newFixTUIModel(dir, cancel))
+	go job(ctx, func(m any) { p.Send(m) })
+	_, err := p.Run()
+	cancel()
+	return err
+}
+
+func RunSync(origin, dest string, job func(ctx context.Context, send func(any))) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := tea.NewProgram(newSyncTUIModel(origin, dest, cancel))
 	go job(ctx, func(m any) { p.Send(m) })
 	_, err := p.Run()
 	cancel()

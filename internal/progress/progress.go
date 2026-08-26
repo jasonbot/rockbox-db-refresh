@@ -30,3 +30,24 @@ type Refresh struct {
 type Done struct{ Err error }
 
 type Cancelled struct{}
+
+// Fix/Sync progress messages
+
+type FileStart struct {
+	Path       string
+	Done, Total int
+}
+
+type FileDone struct {
+	Path    string
+	Skipped bool
+	Err     error
+}
+
+type ArtworkFetched struct {
+	Path string
+}
+
+type MetadataNormalized struct {
+	Path string
+}

@@ -81,8 +81,10 @@ func utf16Decode(raw []byte, bom bool) string {
 func utf16DecodeBE(raw []byte) string { return utf16Decode(raw, false) }
 
 type id3Result struct {
-	meta Meta
-	set  map[string]bool
+	meta         Meta
+	set          map[string]bool
+	coverArt     []byte
+	coverArtMIME string
 }
 
 func (r *id3Result) setField(k, v string) {
@@ -203,6 +205,11 @@ func parseID3v2(f *os.File, t *Track) (int64, bool) {
 	t.Meta.Comment = or(res.meta.Comment, t.Meta.Comment)
 	t.Meta.Grouping = or(res.meta.Grouping, t.Meta.Grouping)
 
+	if res.coverArt != nil {
+		t.CoverArt = res.coverArt
+		t.CoverArtMIME = res.coverArtMIME
+	}
+
 	return bodyOff + size, true
 }
 
@@ -262,6 +269,50 @@ func applyID3Frame(res *id3Result, year *int, trk *int, disc *int, ver int, id s
 			comment = strings.TrimSpace(string(rest))
 		}
 		res.setField("comment", comment)
+	case id == "APIC" || id == "PIC":
+		if len(data) < 2 {
+			return
+		}
+		enc := data[0]
+		rest := data[1:]
+		// Find null terminator for MIME type
+		mimeEnd := -1
+		if enc == 0 || enc == 3 {
+			mimeEnd = strings.IndexByte(string(rest), 0)
+		} else {
+			// UTF-16: look for two null bytes
+			for i := 0; i+1 < len(rest); i += 2 {
+				if rest[i] == 0 && rest[i+1] == 0 {
+					mimeEnd = i
+					break
+				}
+			}
+		}
+		if mimeEnd < 0 {
+			return
+		}
+		mimeType := string(rest[:mimeEnd])
+		rest = rest[mimeEnd+1:]
+		if len(rest) < 2 {
+			return
+		}
+		picType := rest[0]
+		_ = picType // 3 = Cover (front)
+		descLen := int(rest[1])
+		picStart := 2 + descLen
+		if enc == 1 || enc == 2 {
+			// UTF-16 descriptions are null-terminated with 2 bytes
+			for i := 2; i+1 < len(rest); i += 2 {
+				if rest[i] == 0 && rest[i+1] == 0 {
+					picStart = i + 2
+					break
+				}
+			}
+		}
+		if picStart < len(rest) {
+			res.coverArt = rest[picStart:]
+			res.coverArtMIME = mimeType
+		}
 	}
 }
 

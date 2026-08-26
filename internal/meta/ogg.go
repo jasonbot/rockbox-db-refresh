@@ -166,6 +166,7 @@ var mp4TagMap = map[string]string{
 	"aART": "albumartist", "\xa9gen": "genre",
 	"\xa9wrt": "composer", "\xa9cmt": "comment", "\xa9grp": "grouping",
 	"\xa9day": "day", "gnre": "genre", "trkn": "", "disk": "",
+	"covr": "",
 }
 
 func parseMP4(f *os.File, t *Track) error {
@@ -301,6 +302,17 @@ func mp4ParseIlst(f *os.File, boxStart, boxSize int64, t *Track) {
 			if len(payload) >= 2 {
 				if g, ok := genreName(int(binary.BigEndian.Uint16(payload)) - 1); ok {
 					t.Meta.Genre = or(t.Meta.Genre, g)
+				}
+			}
+		case "covr":
+			if len(payload) > 0 {
+				t.CoverArt = payload
+				if len(payload) >= 2 && payload[0] == 0xff && payload[1] == 0xd8 {
+					t.CoverArtMIME = "image/jpeg"
+				} else if len(payload) >= 4 && payload[0] == 0x89 && payload[1] == 'P' && payload[2] == 'N' && payload[3] == 'G' {
+					t.CoverArtMIME = "image/png"
+				} else {
+					t.CoverArtMIME = "image/jpeg"
 				}
 			}
 		default:

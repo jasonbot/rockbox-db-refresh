@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"io"
 	"os"
@@ -179,9 +180,56 @@ func parseVorbisComments(body []byte, t *Track) {
 		pos += int(l)
 		if eq := strings.IndexByte(kv, '='); eq > 0 {
 			key, val := kv[:eq], kv[eq+1:]
+			if strings.ToUpper(key) == "METADATA_BLOCK_PICTURE" {
+				// Value is base64-encoded binary data
+				decoded, err := base64.StdEncoding.DecodeString(val)
+				if err == nil {
+					if pic, picMIME, ok := parseVorbisPictureBlock(decoded); ok {
+						t.CoverArt = pic
+						t.CoverArtMIME = picMIME
+					}
+				}
+				continue
+			}
 			if !setVorbis(&t.Meta, key, val) {
 				setNumericVorbis(t, key, val)
 			}
 		}
 	}
+}
+
+func parseVorbisPictureBlock(data []byte) ([]byte, string, bool) {
+	if len(data) < 32 {
+		return nil, "", false
+	}
+	pos := 0
+	u32 := func() uint32 {
+		if pos+4 > len(data) {
+			return 0
+		}
+		v := binary.LittleEndian.Uint32(data[pos:])
+		pos += 4
+		return v
+	}
+
+	_ = u32() // picture type
+	mimeLen := int(u32())
+	if pos+mimeLen > len(data) {
+		return nil, "", false
+	}
+	mime := string(data[pos : pos+mimeLen])
+	pos += mimeLen
+
+	descLen := int(u32())
+	pos += descLen
+	if pos+16 > len(data) { // width, height, depth, colors
+		return nil, "", false
+	}
+	pos += 16
+
+	dataLen := int(u32())
+	if pos+dataLen > len(data) || dataLen <= 0 {
+		return nil, "", false
+	}
+	return data[pos : pos+dataLen], mime, true
 }
