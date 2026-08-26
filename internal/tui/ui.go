@@ -200,12 +200,12 @@ func (m *baseTUI) renderCurrentLine() string {
 	return styleDim.Render("current: ") + truncate(m.current, max(0, m.width-12))
 }
 
-func (m *baseTUI) renderLogAndButton() string {
+func (m *baseTUI) renderLogAndButton(linesAbove int) string {
 	var b strings.Builder
 	b.WriteString("log ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
 
-	topLines := strings.Count(b.String(), "\n")
-	vpH := max(3, m.height-topLines-1)
+	reserved := linesAbove + 2
+	vpH := max(3, m.height-reserved)
 	m.vp.SetHeight(vpH)
 	b.WriteString(m.vp.View() + "\n")
 
@@ -440,7 +440,7 @@ func (m tuiModel) View() tea.View {
 	m.files.SetRows(rows)
 	b.WriteString(m.files.View() + "\n")
 
-	b.WriteString(m.base.renderLogAndButton())
+	b.WriteString(m.base.renderLogAndButton(9))
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -548,7 +548,7 @@ func (m fixTUIModel) View() tea.View {
 		styleDim.Render(time.Since(m.base.start).Round(time.Second).String()))
 	b.WriteString(stats + "\n\n")
 
-	b.WriteString(m.base.renderLogAndButton())
+	b.WriteString(m.base.renderLogAndButton(7))
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -663,7 +663,7 @@ func (m syncTUIModel) View() tea.View {
 		styleDim.Render(time.Since(m.base.start).Round(time.Second).String()))
 	b.WriteString(stats + "\n\n")
 
-	b.WriteString(m.base.renderLogAndButton())
+	b.WriteString(m.base.renderLogAndButton(8))
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true

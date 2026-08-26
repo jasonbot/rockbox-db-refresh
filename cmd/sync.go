@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/urfave/cli/v2"
+	"golang.org/x/sync/errgroup"
 
 	"rbdb/internal/artwork"
 	"rbdb/internal/convert"
@@ -202,67 +205,79 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 			return
 		}
 
-		converted, skipped, failed := 0, 0, 0
-		outputFiles := make(map[string]bool)
-
-		for i, inputPath := range allFiles {
-			select {
-			case <-ctx.Done():
-				send(progress.Cancelled{})
-				return
-			default:
-			}
-
-			send(progress.FileStart{Path: inputPath, Done: i + 1, Total: len(allFiles)})
-
+		type fileJob struct {
+			inputPath  string
+			outputPath string
+		}
+		jobs := make([]fileJob, 0, len(allFiles))
+		outputFiles := make(map[string]bool, len(allFiles))
+		for _, inputPath := range allFiles {
 			rel, _ := walker.RelativePath(opts.origin, inputPath)
 			outputPath := strings.TrimSuffix(filepath.Join(opts.destination, rel), filepath.Ext(rel)) + ".mp3"
 			outputFiles[outputPath] = true
-
-			if !opts.overwrite && walker.OutputExists(outputPath) {
-				skipped++
-				send(progress.FileDone{Path: inputPath, Skipped: true})
-				continue
-			}
-
-			if opts.dryRun {
-				skipped++
-				send(progress.FileDone{Path: inputPath, Skipped: true})
-				continue
-			}
-
-			track, err := meta.ParseTrack(inputPath, "")
-			if err != nil {
-				failed++
-				send(progress.FileDone{Path: inputPath, Err: err})
-				continue
-			}
-
-			musicbrainz.Enrich(ctx, opts.musicBrainz, track, inputPath, musicbrainz.EnrichOptions{
-				Mode:     opts.normalize,
-				FetchArt: !opts.noArt && track.CoverArt == nil,
-				MinScore: opts.minScore,
-			}, send)
-
-			if err := convert.ConvertFile(ctx, inputPath, outputPath, convert.Options{
-				SampleRate:      convert.DefaultSampleRate,
-				MaxArtDimension: artwork.DefaultMaxDim,
-				MaxArtFileSize:  artwork.DefaultMaxArtFileSize,
-			}); err != nil {
-				failed++
-				send(progress.FileDone{Path: inputPath, Err: err})
-				continue
-			}
-
-			if track.CoverArt != nil {
-				if err := artwork.EmbedCoverArtToMP3(outputPath, track.CoverArt, track.CoverArtMIME); err != nil {
-					vlogf("Warning: failed to embed art for %s: %v", filepath.Base(inputPath), err)
-				}
-			}
-
-			converted++
-			send(progress.FileDone{Path: inputPath})
+			jobs = append(jobs, fileJob{inputPath: inputPath, outputPath: outputPath})
 		}
+
+		var converted, skipped, failed atomic.Int64
+		g, ctx := errgroup.WithContext(ctx)
+		sem := make(chan struct{}, runtime.NumCPU())
+
+		for _, job := range jobs {
+			job := job
+			sem <- struct{}{}
+			g.Go(func() error {
+				defer func() { <-sem }()
+
+				send(progress.FileStart{Path: job.inputPath, Done: int(converted.Load()+skipped.Load()+failed.Load()+1), Total: len(allFiles)})
+
+				if !opts.overwrite && walker.OutputExists(job.outputPath) {
+					skipped.Add(1)
+					send(progress.FileDone{Path: job.inputPath, Skipped: true})
+					return nil
+				}
+
+				if opts.dryRun {
+					skipped.Add(1)
+					send(progress.FileDone{Path: job.inputPath, Skipped: true})
+					return nil
+				}
+
+				track, err := meta.ParseTrack(job.inputPath, "")
+				if err != nil {
+					failed.Add(1)
+					send(progress.FileDone{Path: job.inputPath, Err: err})
+					return nil
+				}
+
+				musicbrainz.Enrich(ctx, opts.musicBrainz, track, job.inputPath, musicbrainz.EnrichOptions{
+					Mode:     opts.normalize,
+					FetchArt: !opts.noArt && track.CoverArt == nil,
+					MinScore: opts.minScore,
+				}, send)
+
+				if err := convert.ConvertFile(ctx, job.inputPath, job.outputPath, convert.Options{
+					SampleRate:      convert.DefaultSampleRate,
+					MaxArtDimension: artwork.DefaultMaxDim,
+					MaxArtFileSize:  artwork.DefaultMaxArtFileSize,
+				}); err != nil {
+					failed.Add(1)
+					send(progress.FileDone{Path: job.inputPath, Err: err})
+					return nil
+				}
+
+				if track.CoverArt != nil {
+					if err := artwork.EmbedCoverArtToMP3(job.outputPath, track.CoverArt, track.CoverArtMIME); err != nil {
+						vlogf("Warning: failed to embed art for %s: %v", filepath.Base(job.inputPath), err)
+					}
+				}
+
+				converted.Add(1)
+				send(progress.FileDone{Path: job.inputPath})
+				return nil
+			})
+		}
+
+		_ = g.Wait()
 
 		if opts.deleteExtra && !opts.dryRun {
 			deleteExtraFiles(opts.destination, outputFiles)

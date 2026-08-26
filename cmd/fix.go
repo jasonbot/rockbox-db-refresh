@@ -6,9 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/urfave/cli/v2"
+	"golang.org/x/sync/errgroup"
 
 	"rbdb/internal/artwork"
 	"rbdb/internal/meta"
@@ -162,46 +165,52 @@ func fixJob(opts fixOptions) func(ctx context.Context, send func(any)) {
 			return
 		}
 
-		for i, path := range mp3s {
-			select {
-			case <-ctx.Done():
-				send(progress.Cancelled{})
-				return
-			default:
-			}
+		var started atomic.Int64
+		g, ctx := errgroup.WithContext(ctx)
+		sem := make(chan struct{}, runtime.NumCPU())
 
-			send(progress.FileStart{Path: path, Done: i + 1, Total: len(mp3s)})
+		for _, path := range mp3s {
+			path := path
+			sem <- struct{}{}
+			g.Go(func() error {
+				defer func() { <-sem }()
 
-			if opts.dryRun {
-				send(progress.FileDone{Path: path, Skipped: true})
-				continue
-			}
+				n := started.Add(1)
+				send(progress.FileStart{Path: path, Done: int(n), Total: len(mp3s)})
 
-			track, err := meta.ParseTrack(path, "")
-			if err != nil {
-				send(progress.FileDone{Path: path, Err: err})
-				continue
-			}
+				if opts.dryRun {
+					send(progress.FileDone{Path: path, Skipped: true})
+					return nil
+				}
 
-			enrich, _ := musicbrainz.Enrich(ctx, opts.musicBrainz, track, path, musicbrainz.EnrichOptions{
-				Mode:     opts.normalize,
-				FetchArt: !opts.noArt && track.CoverArt == nil,
-				MinScore: opts.minScore,
-			}, send)
+				track, err := meta.ParseTrack(path, "")
+				if err != nil {
+					send(progress.FileDone{Path: path, Err: err})
+					return nil
+				}
 
-			if enrich == nil || !enrich.Normalized && !enrich.ArtworkFetched {
-				send(progress.FileDone{Path: path, Skipped: true})
-				continue
-			}
+				enrich, _ := musicbrainz.Enrich(ctx, opts.musicBrainz, track, path, musicbrainz.EnrichOptions{
+					Mode:     opts.normalize,
+					FetchArt: !opts.noArt && track.CoverArt == nil,
+					MinScore: opts.minScore,
+				}, send)
 
-			if err := rewriteMP3(path, track); err != nil {
-				send(progress.FileDone{Path: path, Err: err})
-				continue
-			}
+				if enrich == nil || !enrich.Normalized && !enrich.ArtworkFetched {
+					send(progress.FileDone{Path: path, Skipped: true})
+					return nil
+				}
 
-			send(progress.FileDone{Path: path})
+				if err := rewriteMP3(path, track); err != nil {
+					send(progress.FileDone{Path: path, Err: err})
+					return nil
+				}
+
+				send(progress.FileDone{Path: path})
+				return nil
+			})
 		}
 
+		_ = g.Wait()
 		send(progress.Done{})
 	}
 }

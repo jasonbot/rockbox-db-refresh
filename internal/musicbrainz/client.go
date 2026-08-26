@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -21,6 +22,7 @@ type Client struct {
 	http     *http.Client
 	limiter  *rate.Limiter
 	cacheDir string
+	mu       sync.Mutex
 }
 
 func NewClient(userAgent, cacheDir string) (*Client, error) {

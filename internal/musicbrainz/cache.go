@@ -16,6 +16,8 @@ func cacheKey(url string) string {
 }
 
 func (c *Client) cacheGet(key string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	path := filepath.Join(c.cacheDir, key)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -30,5 +32,7 @@ func (c *Client) cacheGet(key string) ([]byte, bool) {
 }
 
 func (c *Client) cachePut(key string, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	os.WriteFile(filepath.Join(c.cacheDir, key), data, 0644)
 }
