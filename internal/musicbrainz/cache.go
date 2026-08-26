@@ -16,19 +16,31 @@ func cacheKey(url string) string {
 }
 
 func (c *Client) cacheGet(key string) ([]byte, bool) {
+	path := filepath.Join(c.cacheDir, key)
+
+	c.mu.RLock()
+	info, err := os.Stat(path)
+	if err != nil {
+		c.mu.RUnlock()
+		return nil, false
+	}
+	if time.Since(info.ModTime()) <= cacheTTL {
+		data, err := os.ReadFile(path)
+		c.mu.RUnlock()
+		return data, err == nil
+	}
+	c.mu.RUnlock()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	path := filepath.Join(c.cacheDir, key)
-	info, err := os.Stat(path)
+	info, err = os.Stat(path)
 	if err != nil {
 		return nil, false
 	}
 	if time.Since(info.ModTime()) > cacheTTL {
 		os.Remove(path)
-		return nil, false
 	}
-	data, err := os.ReadFile(path)
-	return data, err == nil
+	return nil, false
 }
 
 func (c *Client) cachePut(key string, data []byte) {

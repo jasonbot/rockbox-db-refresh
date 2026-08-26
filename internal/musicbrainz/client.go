@@ -22,7 +22,7 @@ type Client struct {
 	http     *http.Client
 	limiter  *rate.Limiter
 	cacheDir string
-	mu       sync.Mutex
+	mu       sync.RWMutex
 }
 
 func NewClient(userAgent, cacheDir string) (*Client, error) {
