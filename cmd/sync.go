@@ -143,7 +143,7 @@ var syncCommand = &cli.Command{
 		useTUI := !noTUI && !dryRun && isTTY(os.Stdout)
 
 		if useTUI {
-			dirs, err := walker.CollectDirs(absOrigin)
+			dirs, err := walker.CollectDirs(context.Background(), absOrigin)
 			if err == nil {
 				dirs = append([]string{absOrigin}, dirs...)
 			}
@@ -186,7 +186,19 @@ type syncOptions struct {
 
 func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 	return func(ctx context.Context, send func(any)) {
-		dirs, err := walker.CollectDirs(opts.origin)
+		send(progress.Banner{Lines: []string{
+			fmt.Sprintf("origin:     %s", opts.origin),
+			fmt.Sprintf("dest:       %s", opts.destination),
+			fmt.Sprintf("normalize:  %s", opts.normalize),
+			fmt.Sprintf("no-art:     %v", opts.noArt),
+			fmt.Sprintf("overwrite:  %v", opts.overwrite),
+			fmt.Sprintf("delete:     %v", opts.deleteExtra),
+			fmt.Sprintf("dry-run:    %v", opts.dryRun),
+			fmt.Sprintf("min-score:  %d", opts.minScore),
+			fmt.Sprintf("workers:    %d", runtime.NumCPU()),
+		}})
+
+		dirs, err := walker.CollectDirs(ctx, opts.origin)
 		if err != nil {
 			send(progress.Done{Err: err})
 			return
@@ -224,9 +236,16 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 
 		for _, job := range jobs {
 			job := job
+			if ctx.Err() != nil {
+				break
+			}
 			sem <- struct{}{}
 			g.Go(func() error {
 				defer func() { <-sem }()
+
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 
 				send(progress.FileStart{Path: job.inputPath, Done: int(converted.Load()+skipped.Load()+failed.Load()+1), Total: len(allFiles)})
 
@@ -249,11 +268,19 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 					return nil
 				}
 
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
 				musicbrainz.Enrich(ctx, opts.musicBrainz, track, job.inputPath, musicbrainz.EnrichOptions{
 					Mode:     opts.normalize,
 					FetchArt: !opts.noArt && track.CoverArt == nil,
 					MinScore: opts.minScore,
 				}, send)
+
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 
 				if err := convert.ConvertFile(ctx, job.inputPath, job.outputPath, convert.Options{
 					SampleRate:      convert.DefaultSampleRate,

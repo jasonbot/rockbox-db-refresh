@@ -48,6 +48,18 @@ type ArtworkFetched struct {
 	Path string
 }
 
+type ArtworkSearch struct {
+	Path string
+}
+
+type SkippedHasArt struct {
+	Path string
+}
+
 type MetadataNormalized struct {
 	Path string
+}
+
+type Banner struct {
+	Lines []string
 }

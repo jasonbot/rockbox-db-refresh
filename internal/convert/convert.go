@@ -54,7 +54,7 @@ func ConvertAll(ctx context.Context, inputDir, outputDir string, opts Options, o
 		opts.NormalizeMode = "fill"
 	}
 
-	dirs, err := walker.CollectDirs(inputDir)
+	dirs, err := walker.CollectDirs(ctx, inputDir)
 	if err != nil {
 		return err
 	}

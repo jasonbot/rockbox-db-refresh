@@ -1,6 +1,7 @@
 package walker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,11 +9,14 @@ import (
 	"rbdb/internal/meta"
 )
 
-func CollectDirs(root string) ([]string, error) {
+func CollectDirs(ctx context.Context, root string) ([]string, error) {
 	var dirs []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if info.IsDir() && path != root {
 			dirs = append(dirs, path)

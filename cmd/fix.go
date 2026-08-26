@@ -143,7 +143,16 @@ type fixOptions struct {
 
 func fixJob(opts fixOptions) func(ctx context.Context, send func(any)) {
 	return func(ctx context.Context, send func(any)) {
-		dirs, err := walker.CollectDirs(opts.dir)
+		send(progress.Banner{Lines: []string{
+			fmt.Sprintf("dir:        %s", opts.dir),
+			fmt.Sprintf("normalize:  %s", opts.normalize),
+			fmt.Sprintf("no-art:     %v", opts.noArt),
+			fmt.Sprintf("dry-run:    %v", opts.dryRun),
+			fmt.Sprintf("min-score:  %d", opts.minScore),
+			fmt.Sprintf("workers:    %d", runtime.NumCPU()),
+		}})
+
+		dirs, err := walker.CollectDirs(ctx, opts.dir)
 		if err != nil {
 			send(progress.Done{Err: err})
 			return
@@ -171,9 +180,16 @@ func fixJob(opts fixOptions) func(ctx context.Context, send func(any)) {
 
 		for _, path := range mp3s {
 			path := path
+			if ctx.Err() != nil {
+				break
+			}
 			sem <- struct{}{}
 			g.Go(func() error {
 				defer func() { <-sem }()
+
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 
 				n := started.Add(1)
 				send(progress.FileStart{Path: path, Done: int(n), Total: len(mp3s)})
@@ -189,11 +205,29 @@ func fixJob(opts fixOptions) func(ctx context.Context, send func(any)) {
 					return nil
 				}
 
+				if opts.normalize == "none" && track.CoverArt != nil {
+					send(progress.SkippedHasArt{Path: path})
+					send(progress.FileDone{Path: path, Skipped: true})
+					return nil
+				}
+
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
+				if !opts.noArt && track.CoverArt == nil {
+					send(progress.ArtworkSearch{Path: path})
+				}
+
 				enrich, _ := musicbrainz.Enrich(ctx, opts.musicBrainz, track, path, musicbrainz.EnrichOptions{
 					Mode:     opts.normalize,
 					FetchArt: !opts.noArt && track.CoverArt == nil,
 					MinScore: opts.minScore,
 				}, send)
+
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 
 				if enrich == nil || !enrich.Normalized && !enrich.ArtworkFetched {
 					send(progress.FileDone{Path: path, Skipped: true})
@@ -266,7 +300,7 @@ func rewriteMP3(path string, track *meta.Track) error {
 }
 
 func countMP3s(dir string) int {
-	dirs, _ := walker.CollectDirs(dir)
+	dirs, _ := walker.CollectDirs(context.Background(), dir)
 	dirs = append([]string{dir}, dirs...)
 	n := 0
 	for _, d := range dirs {

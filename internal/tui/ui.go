@@ -56,24 +56,26 @@ func FileName(tag int) string {
 
 // baseTUI holds shared state and methods for all TUI models.
 type baseTUI struct {
-	cancelFn   context.CancelFunc
-	found      int
-	done       int
-	skipped    int
-	failed     int
-	current    string
-	start      time.Time
-	logLines   []string
-	vp         viewport.Model
-	bar        bubblesprogress.Model
-	width      int
-	height     int
-	btnX0      int
-	btnX1      int
-	cancelling bool
-	finished   bool
-	buildErr   error
-	wasAtBottom bool
+	cancelFn       context.CancelFunc
+	found          int
+	done           int
+	skipped        int
+	failed         int
+	current        string
+	start          time.Time
+	lastFileDoneAt time.Time
+	logLines       []string
+	vp             viewport.Model
+	bar            bubblesprogress.Model
+	width          int
+	height         int
+	btnX0          int
+	btnX1          int
+	btnY           int
+	cancelling     bool
+	finished       bool
+	buildErr       error
+	wasAtBottom    bool
 }
 
 func newBaseTUI(cancelFn context.CancelFunc) baseTUI {
@@ -110,7 +112,6 @@ func (m *baseTUI) handleTick() tea.Cmd {
 func (m *baseTUI) handleWindowSize(msg tea.WindowSizeMsg) {
 	m.width, m.height = msg.Width, msg.Height
 	m.vp.SetWidth(m.width - 2)
-	m.vp.SetHeight(max(3, m.height/2-2))
 }
 
 func (m *baseTUI) handleKeyPress(msg tea.KeyPressMsg) (tea.Cmd, bool) {
@@ -129,7 +130,10 @@ func (m *baseTUI) handleKeyPress(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			return tea.Quit, true
 		}
 	case "c":
-		if !m.cancelling && !m.finished {
+		if m.finished {
+			return tea.Quit, true
+		}
+		if !m.cancelling {
 			m.cancelling = true
 			m.logLine(logLineDim.Render("cancel requested…"))
 			m.cancelFn()
@@ -144,7 +148,7 @@ func (m *baseTUI) handleKeyPress(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 func (m *baseTUI) handleMouseClick(msg tea.MouseClickMsg) tea.Cmd {
 	mouse := msg.Mouse()
 	if msg.Button == tea.MouseLeft &&
-		mouse.Y == m.height-1 && mouse.X >= m.btnX0 && mouse.X <= m.btnX1 {
+		mouse.Y == m.btnY && mouse.X >= m.btnX0 && mouse.X <= m.btnX1 {
 		if !m.cancelling && !m.finished {
 			m.cancelling = true
 			m.cancelFn()
@@ -204,10 +208,11 @@ func (m *baseTUI) renderLogAndButton(linesAbove int) string {
 	var b strings.Builder
 	b.WriteString("log ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
 
-	reserved := linesAbove + 2
-	vpH := max(3, m.height-reserved)
+	vpH := max(3, m.height-linesAbove-2)
 	m.vp.SetHeight(vpH)
 	b.WriteString(m.vp.View() + "\n")
+
+	m.btnY = linesAbove + 1 + vpH
 
 	label := "  ✖  CANCEL   press c · or click  "
 	if m.cancelling {
@@ -379,6 +384,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.Kept, msg.Updated, msg.Added, msg.Removed)
 		}
 
+	case progress.Banner:
+		for _, line := range msg.Lines {
+			m.base.logLine(styleDim.Render(line))
+		}
+
 	case progress.Cancelled:
 		return m, m.base.handleCancelled()
 
@@ -440,7 +450,7 @@ func (m tuiModel) View() tea.View {
 	m.files.SetRows(rows)
 	b.WriteString(m.files.View() + "\n")
 
-	b.WriteString(m.base.renderLogAndButton(9))
+	b.WriteString(m.base.renderLogAndButton(19))
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -505,13 +515,31 @@ func (m fixTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.base.logLine(logLineSkip.Render(fmt.Sprintf("ERROR %s: %v", filepath.Base(msg.Path), msg.Err)))
 		} else if msg.Skipped {
 			m.base.skipped++
+			if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
+				m.base.lastFileDoneAt = time.Now()
+				m.base.logLine(styleDim.Render(fmt.Sprintf("skip %s", filepath.Base(msg.Path))))
+			}
+		} else if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
+			m.base.lastFileDoneAt = time.Now()
+			m.base.logLine(styleDim.Render(fmt.Sprintf("fixed %s", filepath.Base(msg.Path))))
 		}
 
 	case progress.ArtworkFetched:
 		m.base.logLine(styleOK.Render(fmt.Sprintf("art fetched: %s", filepath.Base(msg.Path))))
 
+	case progress.ArtworkSearch:
+		m.base.logLine(styleDim.Render(fmt.Sprintf("searching art: %s", filepath.Base(msg.Path))))
+
+	case progress.SkippedHasArt:
+		m.base.logLine(styleDim.Render(fmt.Sprintf("has art: %s", filepath.Base(msg.Path))))
+
 	case progress.MetadataNormalized:
 		m.base.logLine(styleOK.Render(fmt.Sprintf("normalized: %s", filepath.Base(msg.Path))))
+
+	case progress.Banner:
+		for _, line := range msg.Lines {
+			m.base.logLine(styleDim.Render(line))
+		}
 
 	case progress.Cancelled:
 		return m, m.base.handleCancelled()
@@ -615,6 +643,13 @@ func (m syncTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.base.logLine(logLineSkip.Render(fmt.Sprintf("ERROR %s: %v", filepath.Base(msg.Path), msg.Err)))
 		} else if msg.Skipped {
 			m.base.skipped++
+			if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
+				m.base.lastFileDoneAt = time.Now()
+				m.base.logLine(styleDim.Render(fmt.Sprintf("skip %s", filepath.Base(msg.Path))))
+			}
+		} else if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
+			m.base.lastFileDoneAt = time.Now()
+			m.base.logLine(styleDim.Render(fmt.Sprintf("synced %s", filepath.Base(msg.Path))))
 		}
 
 	case progress.ArtworkFetched:
@@ -622,6 +657,11 @@ func (m syncTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case progress.MetadataNormalized:
 		m.base.logLine(styleOK.Render(fmt.Sprintf("normalized: %s", filepath.Base(msg.Path))))
+
+	case progress.Banner:
+		for _, line := range msg.Lines {
+			m.base.logLine(styleDim.Render(line))
+		}
 
 	case progress.Cancelled:
 		return m, m.base.handleCancelled()
