@@ -115,24 +115,17 @@ func (m *baseTUI) handleWindowSize(msg tea.WindowSizeMsg) {
 }
 
 func (m *baseTUI) handleKeyPress(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	if m.finished {
+		return tea.Quit, true
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
-		if m.finished {
-			return tea.Quit, true
-		}
 		if m.cancelFn != nil && !m.cancelling {
 			m.cancelling = true
 			m.cancelFn()
 		}
 		return nil, true
-	case "enter", "esc", " ":
-		if m.finished {
-			return tea.Quit, true
-		}
 	case "c":
-		if m.finished {
-			return tea.Quit, true
-		}
 		if !m.cancelling {
 			m.cancelling = true
 			m.logLine(logLineDim.Render("cancel requested…"))
@@ -209,8 +202,18 @@ func (m *baseTUI) renderLogAndButton(linesAbove int) string {
 	b.WriteString("log ─" + strings.Repeat("─", max(0, m.width-8)) + "\n")
 
 	vpH := max(3, m.height-linesAbove-2)
-	m.vp.SetHeight(vpH)
-	b.WriteString(m.vp.View() + "\n")
+
+	n := len(m.logLines)
+	start := 0
+	if n > vpH {
+		start = n - vpH
+	}
+	for _, line := range m.logLines[start:] {
+		b.WriteString(line + "\n")
+	}
+	for remaining := vpH - (n - start); remaining > 0; remaining-- {
+		b.WriteString("\n")
+	}
 
 	m.btnY = linesAbove + 1 + vpH
 
