@@ -147,15 +147,15 @@ func ConvertFile(ctx context.Context, inputPath, outputPath string, opts Options
 		}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "rockbox_converter")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return err
+	}
+
+	tmpDir, err := os.MkdirTemp(filepath.Dir(outputPath), ".rockbox_converter_*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
-
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return err
-	}
 
 	noCoverPath := filepath.Join(tmpDir, "no_cover.mp3")
 	if err := EncodeMP3(ctx, inputPath, noCoverPath, opts.SampleRate); err != nil {
