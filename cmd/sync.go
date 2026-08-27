@@ -235,7 +235,6 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 		sem := make(chan struct{}, runtime.NumCPU())
 
 		for _, job := range jobs {
-			job := job
 			if ctx.Err() != nil {
 				break
 			}
@@ -247,7 +246,7 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 					return ctx.Err()
 				}
 
-				send(progress.FileStart{Path: job.inputPath, Done: int(converted.Load()+skipped.Load()+failed.Load()+1), Total: len(allFiles)})
+				send(progress.FileStart{Path: job.inputPath, Done: int(converted.Load() + skipped.Load() + failed.Load() + 1), Total: len(allFiles)})
 
 				if !opts.overwrite && walker.OutputExists(job.outputPath) {
 					skipped.Add(1)
@@ -336,7 +335,7 @@ func deleteExtraFiles(destDir string, keepFiles map[string]bool) {
 
 func findRockboxRoot(dir string) string {
 	parent := dir
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		rbDir := filepath.Join(parent, ".rockbox")
 		if st, err := os.Stat(rbDir); err == nil && st.IsDir() {
 			return parent

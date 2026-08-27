@@ -179,7 +179,6 @@ func fixJob(opts fixOptions) func(ctx context.Context, send func(any)) {
 		sem := make(chan struct{}, runtime.NumCPU())
 
 		for _, path := range mp3s {
-			path := path
 			if ctx.Err() != nil {
 				break
 			}

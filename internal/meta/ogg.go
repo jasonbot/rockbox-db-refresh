@@ -28,7 +28,7 @@ func readOggPage(f *os.File) (*oggPage, error) {
 		return nil, err
 	}
 	p := &oggPage{granule: int64(binary.LittleEndian.Uint64(h[6:14]))}
-	for i := 0; i < nseg; i++ {
+	for i := range nseg {
 		seg := make([]byte, int(segtab[i]))
 		if _, err := io.ReadFull(f, seg); err != nil {
 			return nil, err

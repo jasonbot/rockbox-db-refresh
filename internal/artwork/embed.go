@@ -44,7 +44,7 @@ func EmbedCoverArtToMP3(mp3Path string, coverArt []byte, mimeType string) error 
 		if tagStart > len(data) {
 			tagStart = 10
 		}
-		existingFrames = data[10:tagStart-10]
+		existingFrames = data[10 : tagStart-10]
 	}
 
 	var allFrames bytes.Buffer

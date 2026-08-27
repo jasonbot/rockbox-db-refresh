@@ -40,7 +40,7 @@ func ReadDatabase(rbDir string) ([]*meta.Track, error) {
 	}
 
 	tracks := make([]*meta.Track, 0, entryCount)
-	for i := 0; i < entryCount; i++ {
+	for i := range entryCount {
 		rec := idx[24+96*i:]
 		var seek [tagCount]int32
 		for j := range seek {

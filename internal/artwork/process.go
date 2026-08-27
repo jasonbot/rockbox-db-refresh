@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultMaxDim       = 300
+	DefaultMaxDim         = 300
 	DefaultMaxArtFileSize = 500 * 1024 // 500KB
 )
 

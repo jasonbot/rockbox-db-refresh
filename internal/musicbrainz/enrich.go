@@ -16,9 +16,9 @@ type EnrichOptions struct {
 
 // EnrichResult reports what changed on a track during enrichment.
 type EnrichResult struct {
-	Match           *NormalizeResult
-	Normalized      bool
-	ArtworkFetched  bool
+	Match          *NormalizeResult
+	Normalized     bool
+	ArtworkFetched bool
 }
 
 // Enrich calls MusicBrainz to normalize metadata and optionally fetch cover art.

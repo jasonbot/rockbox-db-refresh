@@ -67,7 +67,6 @@ func ConvertAll(ctx context.Context, inputDir, outputDir string, opts Options, o
 	for _, dir := range dirs {
 		files := walker.FindAudioFiles(dir)
 		for _, inputPath := range files {
-			inputPath := inputPath
 			rel, _ := walker.RelativePath(inputDir, inputPath)
 			outputPath := strings.TrimSuffix(filepath.Join(outputDir, rel), filepath.Ext(rel)) + ".mp3"
 

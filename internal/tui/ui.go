@@ -56,26 +56,25 @@ func FileName(tag int) string {
 
 // baseTUI holds shared state and methods for all TUI models.
 type baseTUI struct {
-	cancelFn       context.CancelFunc
-	found          int
-	done           int
-	skipped        int
-	failed         int
-	current        string
-	start          time.Time
-	lastFileDoneAt time.Time
-	logLines       []string
-	vp             viewport.Model
-	bar            bubblesprogress.Model
-	width          int
-	height         int
-	btnX0          int
-	btnX1          int
-	btnY           int
-	cancelling     bool
-	finished       bool
-	buildErr       error
-	wasAtBottom    bool
+	cancelFn    context.CancelFunc
+	found       int
+	done        int
+	skipped     int
+	failed      int
+	current     string
+	start       time.Time
+	logLines    []string
+	vp          viewport.Model
+	bar         bubblesprogress.Model
+	width       int
+	height      int
+	btnX0       int
+	btnX1       int
+	btnY        int
+	cancelling  bool
+	finished    bool
+	buildErr    error
+	wasAtBottom bool
 }
 
 func newBaseTUI(cancelFn context.CancelFunc) baseTUI {
@@ -518,12 +517,8 @@ func (m fixTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.base.logLine(logLineSkip.Render(fmt.Sprintf("ERROR %s: %v", filepath.Base(msg.Path), msg.Err)))
 		} else if msg.Skipped {
 			m.base.skipped++
-			if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
-				m.base.lastFileDoneAt = time.Now()
-				m.base.logLine(styleDim.Render(fmt.Sprintf("skip %s", filepath.Base(msg.Path))))
-			}
-		} else if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
-			m.base.lastFileDoneAt = time.Now()
+			m.base.logLine(styleDim.Render(fmt.Sprintf("skip %s", filepath.Base(msg.Path))))
+		} else {
 			m.base.logLine(styleDim.Render(fmt.Sprintf("fixed %s", filepath.Base(msg.Path))))
 		}
 
@@ -646,12 +641,8 @@ func (m syncTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.base.logLine(logLineSkip.Render(fmt.Sprintf("ERROR %s: %v", filepath.Base(msg.Path), msg.Err)))
 		} else if msg.Skipped {
 			m.base.skipped++
-			if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
-				m.base.lastFileDoneAt = time.Now()
-				m.base.logLine(styleDim.Render(fmt.Sprintf("skip %s", filepath.Base(msg.Path))))
-			}
-		} else if time.Since(m.base.lastFileDoneAt) >= 5*time.Second {
-			m.base.lastFileDoneAt = time.Now()
+			m.base.logLine(styleDim.Render(fmt.Sprintf("skip %s", filepath.Base(msg.Path))))
+		} else {
 			m.base.logLine(styleDim.Render(fmt.Sprintf("synced %s", filepath.Base(msg.Path))))
 		}
 

@@ -31,11 +31,11 @@ type mbRecordingSearchResult struct {
 }
 
 type mbRecording struct {
-	ID              string            `json:"id"`
-	Title           string            `json:"title"`
-	Score           int               `json:"score"`
-	ArtistCredit    []mbArtistCredit  `json:"artist-credits"`
-	Releases        []mbRelease       `json:"releases"`
+	ID           string           `json:"id"`
+	Title        string           `json:"title"`
+	Score        int              `json:"score"`
+	ArtistCredit []mbArtistCredit `json:"artist-credits"`
+	Releases     []mbRelease      `json:"releases"`
 }
 
 type mbArtistCredit struct {
@@ -43,10 +43,10 @@ type mbArtistCredit struct {
 }
 
 type mbRelease struct {
-	ID                 string           `json:"id"`
-	Title              string           `json:"title"`
-	Date               string           `json:"date"`
-	ReleaseGroup       mbReleaseGroup   `json:"release-group"`
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Date         string         `json:"date"`
+	ReleaseGroup mbReleaseGroup `json:"release-group"`
 }
 
 type mbReleaseGroup struct {
@@ -148,8 +148,8 @@ func (c *Client) LookupRelease(ctx context.Context, releaseMBID string) (string,
 	}
 
 	params := url.Values{
-		"inc":  {"release-groups"},
-		"fmt":  {"json"},
+		"inc": {"release-groups"},
+		"fmt": {"json"},
 	}
 	lookupURL := fmt.Sprintf("%s/release/%s?%s", mbBaseURL, releaseMBID, params.Encode())
 

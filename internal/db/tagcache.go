@@ -424,7 +424,7 @@ func Build(dir string, tracks []*meta.Track, onTag TagProgress) error {
 
 	buf := make([]byte, 4)
 	for i := range entries {
-		for j := 0; j < tagCount; j++ {
+		for j := range tagCount {
 			putU32le(buf, uint32(entries[i].seek[j]))
 			if _, err := w.Write(buf); err != nil {
 				return err

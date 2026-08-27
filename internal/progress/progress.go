@@ -34,7 +34,7 @@ type Cancelled struct{}
 // Fix/Sync progress messages
 
 type FileStart struct {
-	Path       string
+	Path        string
 	Done, Total int
 }
 
