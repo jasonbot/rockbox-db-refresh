@@ -734,3 +734,119 @@ func RunSync(origin, dest string, job func(ctx context.Context, send func(any)))
 	cancel()
 	return err
 }
+
+// ---- Stock DB model -------------------------------------------------------
+
+type stockTUIModel struct {
+	base    baseTUI
+	root    string
+	classic bool
+	found   int
+	index   int // 0 = reading DB, 1 = building, 2 = writing
+}
+
+func newStockTUIModel(root string, cancelFn context.CancelFunc, classic bool) stockTUIModel {
+	m := stockTUIModel{
+		base:    newBaseTUI(cancelFn),
+		root:    root,
+		classic: classic,
+	}
+	m.base.logLine(styleDim.Render(fmt.Sprintf("reading %s/.rockbox …", root)))
+	return m
+}
+
+func (m stockTUIModel) Init() tea.Cmd { return m.base.handleTick() }
+
+func (m stockTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		return m, m.base.handleTick()
+
+	case tea.WindowSizeMsg:
+		m.base.handleWindowSize(msg)
+		return m, nil
+
+	case tea.KeyPressMsg:
+		cmd, handled := m.base.handleKeyPress(msg)
+		if handled {
+			return m, cmd
+		}
+		return m, cmd
+
+	case tea.MouseClickMsg:
+		return m, m.base.handleMouseClick(msg)
+
+	case tea.MouseWheelMsg, tea.KeyMsg:
+		return m, m.base.handleMouseWheelKey(msg)
+
+	case progress.Banner:
+		for _, line := range msg.Lines {
+			m.base.logLine(styleDim.Render(line))
+		}
+
+	case progress.Found:
+		m.found = msg.N
+		m.base.logLine(fmt.Sprintf("read %d tracks from the Rockbox database", msg.N))
+
+	case progress.StockDB:
+		m.index = 2
+		m.base.finished = true
+		m.base.buildErr = msg.Err
+		if msg.Err != nil {
+			m.base.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
+		} else if msg.Written {
+			m.base.logLine(styleOK.Render(fmt.Sprintf(
+				"wrote stock %s: %d tracks, %d albums, %d skipped",
+				classicLabel(msg.Classic), msg.N, msg.Albums, m.base.skipped)))
+		} else {
+			m.base.logLine(styleDim.Render(fmt.Sprintf(
+				"dry run: %d tracks, %d albums (%d skipped)", msg.N, msg.Albums, m.base.skipped)))
+		}
+		return m, m.base.handleTick()
+
+	case progress.Cancelled:
+		return m, m.base.handleCancelled()
+
+	case progress.Done:
+		m.base.finished = true
+		m.base.buildErr = msg.Err
+		return m, m.base.handleTick()
+	}
+	return m, nil
+}
+
+func classicLabel(classic bool) string {
+	if classic {
+		return "6G/7G iTunesDB"
+	}
+	return "5G iTunesDB"
+}
+
+func (m stockTUIModel) View() tea.View {
+	var b strings.Builder
+	sub := "  ·  6G/7G Classic (HASH58)"
+	if !m.classic {
+		sub = "  ·  5G Video"
+	}
+	b.WriteString(styleTitle.Render("Stock DB Sync") + styleDim.Render(sub) + "\n")
+	root := m.root
+	if len(root) > m.base.width-10 && m.base.width > 20 {
+		root = "…" + root[len(root)-(m.base.width-10):]
+	}
+	b.WriteString(styleDim.Render("root: ") + root + "\n\n")
+	b.WriteString(m.base.renderLogAndButton(3))
+	v := tea.NewView(b.String())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = "rbdb — stock db sync"
+	return v
+}
+
+func RunStock(root string, job func(ctx context.Context, send func(any)), classic bool) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := tea.NewProgram(newStockTUIModel(root, cancel, classic))
+	go job(ctx, func(m any) { p.Send(m) })
+	_, err := p.Run()
+	cancel()
+	return err
+}

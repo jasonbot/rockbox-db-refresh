@@ -63,3 +63,13 @@ type MetadataNormalized struct {
 type Banner struct {
 	Lines []string
 }
+
+// StockDB reports the outcome of a sync-stock-db run. N is the number of
+// tracks written to the stock database.
+type StockDB struct {
+	N       int
+	Albums  int
+	Classic bool
+	Written bool // true if the iTunesDB file was written (false for -dry-run)
+	Err     error
+}

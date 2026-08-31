@@ -10,11 +10,12 @@ No cgo, no external dependencies beyond ffmpeg (for MP3 encoding).
 rbdb <command> [options]
 ```
 
-| Command | Purpose                                                      |
-| ------- | ------------------------------------------------------------ |
-| `db`    | Build/update the `.rockbox/` tagcache database               |
-| `fix`   | Fix MP3 metadata and album art in-place                      |
-| `sync`  | Convert audio files from a source directory to a destination |
+| Command           | Purpose                                                      |
+| ----------------- | ------------------------------------------------------------ |
+| `db`              | Build/update the `.rockbox/` tagcache database               |
+| `fix`             | Fix MP3 metadata and album art in-place                      |
+| `sync`            | Convert audio files from a source directory to a destination |
+| `sync-stock-db`   | Write an iPod stock iTunesDB from the Rockbox tagcache       |
 
 ### rbdb db
 
@@ -101,6 +102,42 @@ rbdb sync [options] <origin> <destination>
 ```sh
 rbdb sync /music/library /mnt/player/Music
 rbdb sync -overwrite -normalize fill /music /mnt/player/Music
+```
+
+### rbdb sync-stock-db
+
+Writes a stock Apple iTunesDB from the Rockbox tagcache database so a stock
+iPod firmware sees your library. Targets the iPod Classic 5G/6G/7G: Rockbox
+paths become iTunes `:Music:…` locations, with tracks, album grouping (type-4
+database plus per-album playlists), and playcounts.
+
+```
+rbdb sync-stock-db [options] [root]
+```
+
+| Flag                 | Default | Effect                                                     |
+| -------------------- | ------- | ---------------------------------------------------------- |
+| `-root DIR`          |         | device root directory (same as positional arg)             |
+| `-dry-run`           | off     | parse + generate in memory only, write nothing             |
+| `-firewire-guid HEX` |         | device FireWire GUID; auto-read from SysInfo if omitted    |
+| `-no-tui`            | off     | plain output                                               |
+| `-v`                 | off     | verbose output                                             |
+
+The output format is detected from the device model number in the SysInfo file
+(`iPod_Control/Device/SysInfo`), the same way a syncing app reads the hardware:
+6G/7G Classic models (e.g. MB029, MB147, MB150, MB562, MC293) get the Classic
+format (dbv 0x19, header 0xF4) with the device-bound HASH58 HMAC-SHA1 checksum;
+a 5G/5.5G Video model (MA…, or no SysInfo) gets the 5G format (dbv 0x0f, header
+0x68) with no checksum. This is filesystem data only — no device query.
+
+The Classic checksum needs the FireWire GUID, read automatically from SysInfo
+(`FirewireGuid` key), or overridable with `-firewire-guid`. The 5G format needs
+no GUID. The iTunesDB is written to `<root>/iPod_Control/iTunes/iTunesDB`.
+
+```sh
+rbdb sync-stock-db /media/classic          # format + GUID detected from SysInfo
+rbdb sync-stock-db -firewire-guid 0x… /mnt # override the GUID
+rbdb sync-stock-db -dry-run /media/iPod    # validate/report, write nothing
 ```
 
 ## MusicBrainz integration
@@ -196,9 +233,10 @@ sorted but not unique; filename is neither.
 
 ```
 main.go                  entry point
-cmd/                     CLI subcommands (db, fix, sync) via urfave/cli
+cmd/                     CLI subcommands (db, fix, sync, sync-stock-db) via urfave/cli
 internal/meta/           Track type + tag parsers (ID3, APE, FLAC/Vorbis, Ogg, MP4)
 internal/db/             tagcache writer (Build) and reader (ReadDatabase)
+internal/ipod/           iTunesDB serializer (mhbd/mhit/mhod/mhia/mhyp/mhip), HASH58, device-type detection
 internal/shuffle/        shuffled playlist install, recency weighting, added.tsv store
 internal/tui/            interactive terminal UI (progress, log, cancel)
 internal/config/         last-root cache

@@ -11,7 +11,7 @@ var App = &cli.App{
 	Name:     "rbdb",
 	Usage:    "Rockbox tagcache database builder and audio converter",
 	Version:  "0.1.0",
-	Commands: []*cli.Command{dbCommand, fixCommand, syncCommand},
+	Commands: []*cli.Command{dbCommand, fixCommand, syncCommand, stockCommand},
 }
 
 func init() {
