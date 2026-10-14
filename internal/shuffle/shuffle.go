@@ -247,3 +247,77 @@ func recencyShuffle(tracks []*meta.Track, recency float64) {
 		tracks[i] = k.t
 	}
 }
+
+// trackAdded is a track's add date, falling back to the file ctime.
+func trackAdded(t *meta.Track) int64 {
+	if t.Added > 0 {
+		return t.Added
+	}
+	return t.CTime
+}
+
+// RecencyAlbumOrder reorders tracks album-by-album using the same
+// Efraimidis-Spirakis recency weighting as the shuffle playlist: an album's
+// recency is its newest track's add date, albums weighted toward the front,
+// and each album's tracks keep their original relative order. The result is
+// a preference ordering, most-preferred first; callers that must fit a size
+// budget can simply take a prefix, dropping whole albums rather than leaving
+// any album half-present.
+func RecencyAlbumOrder(tracks []*meta.Track, recency float64, albumKey func(*meta.Track) string) []*meta.Track {
+	type album struct {
+		tracks []*meta.Track
+		added  int64
+	}
+	index := map[string]int{}
+	var albums []*album
+	for _, t := range tracks {
+		k := albumKey(t)
+		i, ok := index[k]
+		if !ok {
+			i = len(albums)
+			index[k] = i
+			albums = append(albums, &album{added: -1})
+		}
+		a := albums[i]
+		a.tracks = append(a.tracks, t)
+		if d := trackAdded(t); d > a.added {
+			a.added = d
+		}
+	}
+
+	if recency <= 0 {
+		rand.Shuffle(len(albums), func(i, j int) {
+			albums[i], albums[j] = albums[j], albums[i]
+		})
+	} else {
+		sort.SliceStable(albums, func(i, j int) bool { return albums[i].added > albums[j].added })
+		type keyed struct {
+			a *album
+			k float64
+		}
+		keys := make([]keyed, len(albums))
+		for r, a := range albums {
+			w := math.Pow(float64(r+1), -recency)
+			u := rand.Float64()
+			for u == 0 {
+				u = rand.Float64()
+			}
+			keys[r] = keyed{a, math.Log(u) / w}
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].k == keys[j].k {
+				return keys[i].a.added > keys[j].a.added
+			}
+			return keys[i].k > keys[j].k
+		})
+		for i, k := range keys {
+			albums[i] = k.a
+		}
+	}
+
+	out := make([]*meta.Track, 0, len(tracks))
+	for _, a := range albums {
+		out = append(out, a.tracks...)
+	}
+	return out
+}

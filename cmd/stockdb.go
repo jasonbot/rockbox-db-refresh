@@ -10,12 +10,20 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"rbdb/internal/artwork"
 	"rbdb/internal/config"
 	"rbdb/internal/db"
 	"rbdb/internal/ipod"
+	"rbdb/internal/meta"
 	"rbdb/internal/progress"
+	"rbdb/internal/shuffle"
 	"rbdb/internal/tui"
 )
+
+// stockMaxBytesDefault keeps the generated iTunesDB under the 7G Classic's
+// boot-time memory budget: 56.0 MiB was observed to boot and 56.6 MiB to
+// hang, so the default sits ~1.2 MB below the known-good point.
+const stockMaxBytesDefault = 58000000
 
 type stockOptions struct {
 	root        string
@@ -24,6 +32,10 @@ type stockOptions struct {
 	firewire    []byte
 	fireWireStr string
 	model       string
+	maxBytes    int
+	recency     float64
+	noRotate    bool
+	artwork     bool
 }
 
 var stockCommand = &cli.Command{
@@ -48,6 +60,24 @@ var stockCommand = &cli.Command{
 		&cli.BoolFlag{
 			Name:  "classic",
 			Usage: "force 6G/7G Classic format regardless of the SysInfo model number",
+		},
+		&cli.IntFlag{
+			Name:  "stock-max-bytes",
+			Usage: "maximum iTunesDB size in bytes; when the library would exceed it, whole albums are rotated out (recency-weighted) until it fits",
+			Value: stockMaxBytesDefault,
+		},
+		&cli.Float64Flag{
+			Name:  "stock-recency",
+			Usage: "recency bias strength for album rotation: newer albums are more likely to be kept; 0 = uniform random",
+			Value: 2.0,
+		},
+		&cli.BoolFlag{
+			Name:  "no-stock-rotate",
+			Usage: "fail instead of rotating albums out when the iTunesDB would exceed -stock-max-bytes",
+		},
+		&cli.BoolFlag{
+			Name:  "artwork",
+			Usage: "extract embedded album art and write ArtworkDB + ithmb files for Cover Flow (Classic only)",
 		},
 		&cli.BoolFlag{
 			Name:    "no-tui",
@@ -145,6 +175,10 @@ var stockCommand = &cli.Command{
 			firewire:    fw,
 			fireWireStr: fwStr,
 			model:       model,
+			maxBytes:    c.Int("stock-max-bytes"),
+			recency:     c.Float64("stock-recency"),
+			noRotate:    c.Bool("no-stock-rotate"),
+			artwork:     c.Bool("artwork"),
 		}
 
 		if useTUI {
@@ -166,10 +200,21 @@ var stockCommand = &cli.Command{
 					done <- msg.Err
 					return
 				}
+				rotated := ""
+				if msg.Dropped > 0 {
+					rotated = fmt.Sprintf(", %d tracks rotated out to fit the %d-byte budget", msg.Dropped, opts.maxBytes)
+				}
+				art := ""
+				if msg.ArtImages > 0 || msg.ArtAlbums > 0 {
+					art = fmt.Sprintf(", artwork: %d images (%d albums with art, %d failed)", msg.ArtImages, msg.ArtAlbums, msg.ArtFailed)
+				}
 				if opts.classic {
-					fmt.Fprintf(os.Stderr, "%d tracks, %d albums -> %s format (HASH58)\n", msg.N, msg.Albums, classicLabel(msg.Classic))
+					fmt.Fprintf(os.Stderr, "%d tracks, %d albums%s%s -> %s format (HASH58)\n", msg.N, msg.Albums, rotated, art, classicLabel(msg.Classic))
 				} else {
-					fmt.Fprintf(os.Stderr, "%d tracks, %d albums -> %s format\n", msg.N, msg.Albums, classicLabel(msg.Classic))
+					fmt.Fprintf(os.Stderr, "%d tracks, %d albums%s%s -> %s format\n", msg.N, msg.Albums, rotated, art, classicLabel(msg.Classic))
+				}
+				if msg.ArtErr != nil {
+					fmt.Fprintf(os.Stderr, "artwork failed: %v\n", msg.ArtErr)
 				}
 				done <- nil
 			case progress.Done:
@@ -224,23 +269,86 @@ func stockJob(opts stockOptions) func(ctx context.Context, send func(any)) {
 			return
 		}
 
-		if opts.dryRun {
-			_, lay, err := ipod.BuildBytes(tracks, ipod.Options{Classic: opts.classic, FireWire: opts.firewire})
-			if err != nil {
-				send(progress.StockDB{Err: err})
-				return
-			}
-			send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Classic: opts.classic, Written: false})
-			return
+		// Stamp stable add dates (the sidecar is shared with db --shuffle)
+		// so the rotation lottery treats tracks consistently across syncs.
+		added := shuffle.ApplyAddedDates(rbDir, tracks)
+		if !opts.dryRun {
+			// Best effort: without it, unseen paths just reseed from ctime.
+			_ = shuffle.WriteAddedDates(rbDir, added)
 		}
 
-		lay, err := ipod.Build(opts.root, tracks, ipod.Options{Classic: opts.classic, FireWire: opts.firewire})
+		ipOpts := ipod.Options{Classic: opts.classic, FireWire: opts.firewire}
+		data, lay, err := ipod.BuildBytes(tracks, ipOpts)
+		dropped := 0
+		kept := tracks
+		if err == nil && len(data) > opts.maxBytes {
+			if opts.noRotate {
+				err = fmt.Errorf("iTunesDB is %d bytes, over the %d-byte budget (rotation disabled with -no-stock-rotate)", len(data), opts.maxBytes)
+			} else {
+				// Over budget: rotate whole albums out, newest-kept bias.
+				ordered := shuffle.RecencyAlbumOrder(tracks, opts.recency, ipod.AlbumKey)
+				data, lay, dropped, err = ipod.FitBytes(ordered, ipOpts, opts.maxBytes)
+				if err == nil {
+					kept = ordered[:lay.Tracks]
+				}
+			}
+		}
 		if err != nil {
 			send(progress.StockDB{Err: err})
 			return
 		}
-		send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Classic: opts.classic, Written: true})
+
+		artImages, artAlbums, artFailed := 0, 0, 0
+		var artErr error
+		if opts.artwork && !opts.dryRun {
+			if !opts.classic {
+				artErr = fmt.Errorf("artwork is only supported for the 6G/7G Classic format")
+			} else {
+				ids := trackIDs(kept)
+				links, astats, aerr := artwork.Sync(opts.root, kept, ipod.AlbumKey,
+					func(t *meta.Track) uint64 { return ids[t] }, artwork.ClassicFormats())
+				if aerr != nil {
+					artErr = aerr
+				} else {
+					artImages = astats.Images
+					artAlbums, artFailed = astats.WithArt, astats.Failed
+					ipOpts.Artwork = links
+					// Rebuild with the artwork fields set; they live in the
+					// fixed-size mhit header, so the size is unchanged.
+					data, lay, err = ipod.BuildBytes(kept, ipOpts)
+				}
+			}
+		}
+		if err != nil {
+			send(progress.StockDB{Err: err})
+			return
+		}
+		if opts.dryRun {
+			send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Dropped: dropped, Classic: opts.classic, Written: false})
+			return
+		}
+		if err := ipod.WriteDatabase(opts.root, data); err != nil {
+			send(progress.StockDB{Err: err})
+			return
+		}
+		send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Dropped: dropped, Classic: opts.classic, Written: true, ArtImages: artImages, ArtAlbums: artAlbums, ArtFailed: artFailed, ArtErr: artErr})
 	}
+}
+
+// trackIDs maps each track to the 1-based id the iTunesDB builder assigns
+// (ids run over the filtered track order), used as the dbid/song_id key
+// shared with the ArtworkDB.
+func trackIDs(tracks []*meta.Track) map[*meta.Track]uint64 {
+	m := make(map[*meta.Track]uint64, len(tracks))
+	var id uint64
+	for _, t := range tracks {
+		if t == nil || t.DevPath == "" {
+			continue
+		}
+		id++
+		m[t] = id
+	}
+	return m
 }
 
 func guidOrNone(s string) string {
@@ -296,14 +404,14 @@ func parseSysInfoText(path string) (model, firewire string) {
 		if !ok {
 			continue
 		}
-		k := strings.TrimSpace(key)
+		k := strings.ToLower(strings.TrimSpace(key))
 		v := strings.TrimSpace(strings.Trim(val, "\x00"))
 		switch k {
-		case "ModelNumStr", "ModelNumber", "ModelName":
+		case "modelnumstr", "modelnumber", "modelname":
 			if model == "" {
 				model = normalizeModel(v)
 			}
-		case "FirewireGuid", "FireWireGUID", "FireWireGuid":
+		case "firewireguid":
 			if firewire == "" {
 				firewire = strings.TrimPrefix(v, "0x")
 			}

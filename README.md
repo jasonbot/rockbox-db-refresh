@@ -108,28 +108,40 @@ rbdb sync -overwrite -normalize fill /music /mnt/player/Music
 
 Writes a stock Apple iTunesDB from the Rockbox tagcache database so a stock
 iPod firmware sees your library. Targets the iPod Classic 5G/6G/7G: Rockbox
-paths become iTunes `:Music:…` locations, with tracks, album grouping (type-4
-database plus per-album playlists), and playcounts.
+paths become iTunes `:Music:…` locations, with tracks, album grouping (the
+type-4 album database) and the master library playlist, and playcounts.
 
 ```
 rbdb sync-stock-db [options] [root]
 ```
 
-| Flag                 | Default | Effect                                                     |
-| -------------------- | ------- | ---------------------------------------------------------- |
-| `-root DIR`          |         | device root directory (same as positional arg)             |
-| `-dry-run`           | off     | parse + generate in memory only, write nothing             |
-| `-firewire-guid HEX` |         | device FireWire GUID; auto-read from SysInfo if omitted    |
-| `-classic`          | off     | force 6G/7G Classic format (skip model detection)         |
-| `-no-tui`            | off     | plain output                                               |
-| `-v`                 | off     | verbose output                                             |
+| Flag                 | Default    | Effect                                                     |
+| -------------------- | ---------- | ---------------------------------------------------------- |
+| `-root DIR`          |            | device root directory (same as positional arg)             |
+| `-dry-run`           | off        | parse + generate in memory only, write nothing             |
+| `-firewire-guid HEX` |            | device FireWire GUID; auto-read from SysInfo if omitted    |
+| `-classic`           | off        | force 6G/7G Classic format (skip model detection)          |
+| `-stock-max-bytes N` | 58000000   | iTunesDB byte budget; oversized libraries are rotated      |
+| `-stock-recency F`   | 2.0        | rotation bias: newer albums kept more likely; 0 = uniform  |
+| `-no-stock-rotate`   | off        | fail instead of rotating when over the byte budget         |
+| `-no-tui`            | off        | plain output                                               |
+| `-v`                 | off        | verbose output                                             |
 
 The output format is detected from the device model number in the SysInfo file
 (`iPod_Control/Device/SysInfo`), the same way a syncing app reads the hardware:
 6G/7G Classic models (e.g. MB029, MB147, MB150, MB562, MC293) get the Classic
-format (dbv 0x19, header 0xF4) with the device-bound HASH58 HMAC-SHA1 checksum;
+format (dbv 0x30, header 0xF4) with the device-bound HASH58 HMAC-SHA1 checksum;
 a 5G/5.5G Video model (MA…, or no SysInfo) gets the 5G format (dbv 0x0f, header
 0x68) with no checksum. This is filesystem data only — no device query.
+
+The Classic firmware parses the whole iTunesDB into RAM at boot, and its
+budget is small: on the 7G Classic a ~56.6 MiB database hangs at the Apple
+logo while ~56.0 MiB boots. When the library would not fit the byte budget
+(`-stock-max-bytes`, default 58,000,000), whole albums are rotated out — an
+Efraimidis–Spirakis weighted draw biased by add date (the same scheme as
+`db --shuffle`, sharing `.rockbox/added.tsv`), so each sync keeps a fresh,
+album-intact sample of the library and growth breaks nothing. The dropped
+count is reported after the run; use `-no-stock-rotate` to fail instead.
 
 The Classic checksum needs the FireWire GUID, read automatically from SysInfo
 (`FirewireGuid` key), or overridable with `-firewire-guid`. The 5G format needs
@@ -140,6 +152,7 @@ rbdb sync-stock-db /media/classic          # format + GUID detected from SysInfo
 rbdb sync-stock-db -classic /media/iPod    # force 6G/7G Classic format
 rbdb sync-stock-db -firewire-guid 0x… /mnt # override the GUID
 rbdb sync-stock-db -dry-run /media/iPod    # validate/report, write nothing
+rbdb sync-stock-db -stock-max-bytes 56000000 /media/classic  # tighter budget
 ```
 
 ## MusicBrainz integration

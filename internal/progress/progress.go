@@ -66,11 +66,19 @@ type Banner struct {
 }
 
 // StockDB reports the outcome of a sync-stock-db run. N is the number of
-// tracks written to the stock database.
+// tracks written to the stock database. Dropped is the number of tracks
+// rotated out to fit the byte budget (0 when the whole library fit).
+// ArtImages is the number of unique images written to the ArtworkDB
+// (0 when -artwork is off); ArtErr reports a non-fatal artwork failure.
 type StockDB struct {
-	N       int
-	Albums  int
-	Classic bool
-	Written bool // true if the iTunesDB file was written (false for -dry-run)
-	Err     error
+	N         int
+	Albums    int
+	Dropped   int
+	Classic   bool
+	Written   bool // true if the iTunesDB file was written (false for -dry-run)
+	ArtImages int
+	ArtAlbums int // albums where embedded art was found
+	ArtFailed int // images dropped by failed conversion
+	ArtErr    error
+	Err       error
 }

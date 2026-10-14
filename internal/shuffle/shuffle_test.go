@@ -79,3 +79,73 @@ func TestWriteCatalogPlaylist(t *testing.T) {
 		t.Fatalf("playlist = %q, want %q", got, want)
 	}
 }
+
+func albumKeyOf(t *meta.Track) string { return t.Meta.Album }
+
+func albumOf(t *meta.Track) string { return t.Meta.Album }
+
+func mkAlbum(album string, n int, added int64) []*meta.Track {
+	var out []*meta.Track
+	for i := 0; i < n; i++ {
+		out = append(out, &meta.Track{
+			DevPath: album + string(rune('a'+i)) + ".mp3",
+			Meta:    meta.Meta{Album: album, Title: album + string(rune('a'+i))},
+			Added:   added,
+		})
+	}
+	return out
+}
+
+func TestRecencyAlbumOrderContiguous(t *testing.T) {
+	var tracks []*meta.Track
+	tracks = append(tracks, mkAlbum("A", 3, 100)...)
+	tracks = append(tracks, mkAlbum("B", 2, 300)...)
+	tracks = append(tracks, mkAlbum("C", 4, 200)...)
+
+	for _, recency := range []float64{0, 2.0} {
+		out := RecencyAlbumOrder(tracks, recency, albumKeyOf)
+		if len(out) != len(tracks) {
+			t.Fatalf("recency=%v: got %d tracks, want %d", recency, len(out), len(tracks))
+		}
+		// Albums must stay contiguous and internally ordered.
+		seen := map[string]bool{}
+		last := ""
+		counts := map[string]int{}
+		for _, tr := range out {
+			a := albumOf(tr)
+			if a != last {
+				if seen[a] {
+					t.Fatalf("recency=%v: album %s appears twice", recency, a)
+				}
+				seen[a] = true
+				last = a
+			}
+			counts[a]++
+		}
+		for album, want := range map[string]int{"A": 3, "B": 2, "C": 4} {
+			if counts[album] != want {
+				t.Fatalf("recency=%v: album %s has %d tracks, want %d", recency, album, counts[album], want)
+			}
+		}
+	}
+}
+
+func TestRecencyAlbumOrderBias(t *testing.T) {
+	// Strong recency bias: the newest album should almost always lead.
+	firsts := map[string]int{}
+	const runs = 100
+	for i := 0; i < runs; i++ {
+		var tracks []*meta.Track
+		tracks = append(tracks, mkAlbum("old", 2, 100)...)
+		tracks = append(tracks, mkAlbum("mid", 2, 200)...)
+		tracks = append(tracks, mkAlbum("new", 2, 300)...)
+		out := RecencyAlbumOrder(tracks, 8.0, albumKeyOf)
+		firsts[albumOf(out[0])]++
+	}
+	if firsts["new"] < 90 {
+		t.Fatalf("newest album led %d/%d runs, expected >= 90", firsts["new"], runs)
+	}
+	if firsts["old"] > 5 {
+		t.Fatalf("oldest album led %d/%d runs, expected <= 5", firsts["old"], runs)
+	}
+}

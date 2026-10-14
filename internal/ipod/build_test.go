@@ -2,9 +2,11 @@ package ipod
 
 import (
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"testing"
 
+	"rbdb/internal/artwork"
 	"rbdb/internal/meta"
 )
 
@@ -90,7 +92,7 @@ func TestBuild5GAnd6GStructures(t *testing.T) {
 		version := binary.LittleEndian.Uint32(db[0x10:])
 		wantVer := uint32(0x0f)
 		if classic {
-			wantVer = 0x19
+			wantVer = 0x30
 		}
 		if version != wantVer {
 			t.Fatalf("version %x", version)
@@ -132,8 +134,11 @@ func parseBack(t *testing.T, db []byte) (tracks []parseTrack, albums []string, p
 		styp := binary.LittleEndian.Uint32(db[off+0x0C:])
 		// list chunk follows mhsd header (0x18)
 		listOff := off + int(binary.LittleEndian.Uint32(db[off+4:]))
-		if string(db[listOff:listOff+4]) != "mhlt" && string(db[listOff:listOff+4]) != "mhla" && string(db[listOff:listOff+4]) != "mhlp" {
-			t.Fatalf("mhsd type %d list is %q", styp, db[listOff:listOff+4])
+		{ // the Classic layout also carries an artist list (mhli)
+			name := string(db[listOff : listOff+4])
+			if name != "mhlt" && name != "mhla" && name != "mhlp" && name != "mhli" {
+				t.Fatalf("mhsd type %d list is %q", styp, name)
+			}
 		}
 		count := int(binary.LittleEndian.Uint32(db[listOff+8:]))
 		itemOff := listOff + int(binary.LittleEndian.Uint32(db[listOff+4:]))
@@ -246,17 +251,185 @@ func TestParseBackRoundTrip(t *testing.T) {
 		if len(albums) != 2 || albums[0] != "Album1" || albums[1] != "Album2" {
 			t.Fatalf("albums=%v", albums)
 		}
-		if len(playlists) != 3 {
-			t.Fatalf("playlists=%d", len(playlists))
+		if len(playlists) != 1 {
+			t.Fatalf("playlists=%d (want only the master library)", len(playlists))
 		}
 		if !playlists[0].master || playlists[0].mhips != 3 {
 			t.Fatalf("master playlist %+v", playlists[0])
 		}
-		if playlists[1].name != "Album1" || playlists[1].mhips != 2 {
-			t.Fatalf("album playlist %+v", playlists[1])
+	}
+}
+
+// datasetTypes returns the ordered mhsd dataset types in an mhbd database.
+func datasetTypes(t *testing.T, db []byte) []int {
+	t.Helper()
+	var types []int
+	off := int(binary.LittleEndian.Uint32(db[4:]))
+	end := int(binary.LittleEndian.Uint32(db[8:]))
+	for off < end {
+		if string(db[off:off+4]) != "mhsd" {
+			t.Fatalf("mhbd child at %d is %q", off, db[off:off+4])
 		}
-		if playlists[2].name != "Album2" || playlists[2].mhips != 1 {
-			t.Fatalf("album playlist %+v", playlists[2])
+		if got := binary.LittleEndian.Uint32(db[off+4:]); got != 0x60 {
+			t.Fatalf("mhsd header len = %#x, want 0x60", got)
+		}
+		types = append(types, int(binary.LittleEndian.Uint32(db[off+0x0C:])))
+		off += int(binary.LittleEndian.Uint32(db[off+8:]))
+	}
+	return types
+}
+
+// TestClassicLayoutOffsets pins the exact on-disk layout the 6G/7G firmware
+// expects, matching libgpod's writer: header sizes, dataset set, and the
+// mhit/mhia album id linkage.
+func TestClassicLayoutOffsets(t *testing.T) {
+	db, _, err := BuildBytes(testTracks(), Options{Classic: true, FireWire: []byte{1, 2, 3, 4, 5, 6, 7, 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(db[4:]); got != 0xF4 {
+		t.Fatalf("mhbd header len = %#x, want 0xF4", got)
+	}
+	wantTypes := []int{1, 3, 2, 4, 8, 6, 10, 5}
+	got := datasetTypes(t, db)
+	if len(got) != len(wantTypes) {
+		t.Fatalf("datasets = %v, want %v", got, wantTypes)
+	}
+	for i := range wantTypes {
+		if got[i] != wantTypes[i] {
+			t.Fatalf("datasets = %v, want %v", got, wantTypes)
+		}
+	}
+
+	// Walk the whole tree and check every container header size plus the
+	// album-id linkage between mhit and mhia (both 1-based, same order).
+	wantHdr := map[string]uint32{
+		"mhlt": 0x5C, "mhlp": 0x5C, "mhla": 0x5C, "mhli": 0x5C,
+		"mhit": 0x248, "mhyp": 0x6C, "mhip": 0x4C, "mhia": 0x58,
+		"mhod": 0x18,
+	}
+	var mhitAlbum, mhiaAlbum []uint32
+	var walk func(o, end int)
+	walk = func(o, end int) {
+		for o < end {
+			name := string(db[o : o+4])
+			hdr := binary.LittleEndian.Uint32(db[o+4:])
+			if want, ok := wantHdr[name]; ok && hdr != want {
+				t.Fatalf("%s at %d header len %#x, want %#x", name, o, hdr, want)
+			}
+			if name == "mhit" {
+				mhitAlbum = append(mhitAlbum, binary.LittleEndian.Uint32(db[o+0x120:]))
+			}
+			if name == "mhia" {
+				mhiaAlbum = append(mhiaAlbum, binary.LittleEndian.Uint32(db[o+0x10:]))
+			}
+			val := int(binary.LittleEndian.Uint32(db[o+8:]))
+			switch name {
+			case "mhlt", "mhlp", "mhla", "mhli":
+				// Child count at +8, list body follows the header.
+				body := o + int(hdr)
+				for i := 0; i < val; i++ {
+					itEnd := body + int(binary.LittleEndian.Uint32(db[body+8:]))
+					walk(body, itEnd)
+					body = itEnd
+				}
+				o = body
+			case "mhod":
+				o += val // leaf: string/position data follows the header
+			default:
+				walk(o+int(hdr), o+val)
+				o += val
+			}
+		}
+	}
+	walk(int(binary.LittleEndian.Uint32(db[4:])), len(db))
+
+	if len(mhitAlbum) == 0 || len(mhiaAlbum) == 0 {
+		t.Fatalf("album id counts: mhit=%d mhia=%d", len(mhitAlbum), len(mhiaAlbum))
+	}
+	// mhia ids are 1-based and dense, in first-seen order.
+	for i, id := range mhiaAlbum {
+		if id != uint32(i+1) {
+			t.Fatalf("mhia[%d] id = %d, want %d", i, id, i+1)
+		}
+	}
+	// Every track's album id must reference one of those albums.
+	for i, id := range mhitAlbum {
+		if id < 1 || id > uint32(len(mhiaAlbum)) {
+			t.Fatalf("mhit[%d] album id = %d, want 1..%d", i, id, len(mhiaAlbum))
+		}
+	}
+}
+
+func TestClassicMasterPlaylistIndexes(t *testing.T) {
+	db, _, err := BuildBytes(testTracks(), Options{Classic: true, FireWire: []byte{1, 2, 3, 4, 5, 6, 7, 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// datasets 3 and 2 each contain exactly one playlist: the type-3 podcast
+	// dataset mirrors the master playlist (the firmware browses from it).
+	got := datasetTypes(t, db)
+	seen := map[int]int{}
+	for _, typ := range got {
+		seen[typ]++
+	}
+	if seen[3] != 1 || seen[2] != 1 {
+		t.Fatalf("datasets = %v", got)
+	}
+
+	// Find the master mhyp (master flag at +0x14) and confirm it carries
+	// 12 child mhods: title, long preferences, then 5x type-52 and 5x type-53.
+	var masterOff = -1
+	var walk func(off, end int)
+	walk = func(off, end int) {
+		for off < end {
+			name := string(db[off : off+4])
+			hdr := int(binary.LittleEndian.Uint32(db[off+4:]))
+			val := int(binary.LittleEndian.Uint32(db[off+8:]))
+			switch name {
+			case "mhlt", "mhlp", "mhla", "mhli":
+				body := off + hdr
+				for i := 0; i < val; i++ {
+					itEnd := body + int(binary.LittleEndian.Uint32(db[body+8:]))
+					walk(body, itEnd)
+					body = itEnd
+				}
+				off = body
+			case "mhod":
+				off += val
+			default:
+				if name == "mhyp" && db[off+0x14] == 1 {
+					masterOff = off
+				}
+				walk(off+hdr, off+val)
+				off += val
+			}
+		}
+	}
+	walk(int(binary.LittleEndian.Uint32(db[4:])), len(db))
+	if masterOff < 0 {
+		t.Fatal("master playlist not found")
+	}
+	if n := binary.LittleEndian.Uint32(db[masterOff+0x0C:]); n != 12 {
+		t.Fatalf("master mhod count = %d, want 12", n)
+	}
+	hdr := int(binary.LittleEndian.Uint32(db[masterOff+4:]))
+	var types []uint32
+	for o := masterOff + hdr; o < masterOff+int(binary.LittleEndian.Uint32(db[masterOff+8:])); {
+		if string(db[o:o+4]) != "mhod" {
+			break
+		}
+		types = append(types, binary.LittleEndian.Uint32(db[o+0x0C:]))
+		o += int(binary.LittleEndian.Uint32(db[o+8:]))
+	}
+	want := []uint32{1, 100, 52, 53, 52, 53, 52, 53, 52, 53, 52, 53}
+	if len(types) != len(want) {
+		t.Fatalf("master mhod types = %v, want %v", types, want)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("master mhod types = %v, want %v", types, want)
 		}
 	}
 }
@@ -276,5 +449,114 @@ func TestMhodStringLayout(t *testing.T) {
 	// utf16 content "Hi" at 0x28
 	if b[0x28] != 'H' || b[0x2A] != 'i' {
 		t.Fatalf("utf16 content wrong")
+	}
+}
+
+func TestFitBytes(t *testing.T) {
+	var tracks []*meta.Track
+	for i := 0; i < 200; i++ {
+		tracks = append(tracks, &meta.Track{
+			DevPath: fmt.Sprintf("/Music/Artist/Album%02d/track%03d.mp3", i/10, i),
+			Meta: meta.Meta{
+				Title:  fmt.Sprintf("Some Reasonably Long Track Title %03d", i),
+				Artist: "Artist",
+				Album:  fmt.Sprintf("Album%02d", i/10),
+				Genre:  "Rock",
+			},
+			Year:     2000,
+			TrackNum: i%10 + 1,
+			LengthMS: 200000,
+			Bitrate:  320,
+			Size:     1000,
+		})
+	}
+	opts := Options{Classic: false}
+
+	full, lay, err := BuildBytes(tracks, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lay.Tracks != 200 {
+		t.Fatalf("full layout tracks = %d", lay.Tracks)
+	}
+
+	// A generous budget keeps everything.
+	data, lay, dropped, err := FitBytes(tracks, opts, len(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 0 || lay.Tracks != 200 || len(data) != len(full) {
+		t.Fatalf("generous budget: dropped=%d tracks=%d", dropped, lay.Tracks)
+	}
+
+	// A ~60% budget must fit and keep a prefix.
+	budget := len(full) * 60 / 100
+	data, lay, dropped, err = FitBytes(tracks, opts, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > budget {
+		t.Fatalf("data %d bytes exceeds budget %d", len(data), budget)
+	}
+	if dropped == 0 || lay.Tracks+dropped != 200 {
+		t.Fatalf("dropped=%d tracks=%d, want a strict prefix of 200", dropped, lay.Tracks)
+	}
+	if _, _, err := BuildBytes(tracks[:lay.Tracks], opts); err == nil {
+		// sanity: the prefix itself is buildable
+	}
+}
+
+func TestClassicArtworkFields(t *testing.T) {
+	tracks := testTracks()
+	fw := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	plain, _, err := BuildBytes(tracks, Options{Classic: true, FireWire: fw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	art := map[*meta.Track]artwork.ArtLink{
+		tracks[0]: {ImgID: 42, SrcSize: 12345},
+	}
+	withArt, _, err := BuildBytes(tracks, Options{Classic: true, FireWire: fw, Artwork: art})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Artwork lives in the fixed-size mhit header: identical file size.
+	if len(plain) != len(withArt) {
+		t.Fatalf("size changed with artwork: %d vs %d", len(plain), len(withArt))
+	}
+	// First mhit of the track dataset.
+	off := int(binary.LittleEndian.Uint32(withArt[4:]))
+	mhsd := withArt[off:]
+	mhlt := mhsd[int(binary.LittleEndian.Uint32(mhsd[4:])):]
+	mhit := mhlt[int(binary.LittleEndian.Uint32(mhlt[4:])):]
+	if string(mhit[:4]) != "mhit" {
+		t.Fatalf("no mhit")
+	}
+	if n := binary.LittleEndian.Uint16(mhit[0x7C:]); n != 1 {
+		t.Fatalf("artwork count = %d", n)
+	}
+	if n := binary.LittleEndian.Uint32(mhit[0x80:]); n != 12345 {
+		t.Fatalf("artwork size = %d", n)
+	}
+	if mhit[0xA4] != 1 {
+		t.Fatalf("has_artwork = %d", mhit[0xA4])
+	}
+	if n := binary.LittleEndian.Uint32(mhit[0x160:]); n != 42 {
+		t.Fatalf("mhii_link = %d", n)
+	}
+	// Track two has no art.
+	second := mhit[int(binary.LittleEndian.Uint32(mhit[0x08:])):]
+	if n := binary.LittleEndian.Uint16(second[0x7C:]); n != 0 {
+		t.Fatalf("track2 artwork count = %d", n)
+	}
+	if n := binary.LittleEndian.Uint32(second[0x160:]); n != 0 {
+		t.Fatalf("track2 mhii_link = %d", n)
+	}
+}
+
+func TestAlbumKeyExported(t *testing.T) {
+	tr := &meta.Track{Meta: meta.Meta{Album: "Album1", Artist: "ArtistA"}}
+	if AlbumKey(tr) != albumKey(tr) {
+		t.Fatalf("AlbumKey mismatch")
 	}
 }

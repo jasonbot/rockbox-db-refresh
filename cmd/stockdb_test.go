@@ -34,10 +34,39 @@ func writeSysInfo(t *testing.T, root, model, guid string) {
 		b += "ModelNumStr: " + model + "\n"
 	}
 	if guid != "" {
-		b += "FirewireGuid: " + guid + "\n"
+		b += "FirewireGUID: " + guid + "\n"
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SysInfo"), []byte(b), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestParseSysInfoTextKeys verifies the plain-text SysInfo parser accepts the
+// key spellings found in the wild, notably the all-caps "FirewireGUID" used by
+// iPod firmware (the historical bug: "FirewireGuid" is not the same key).
+func TestParseSysInfoTextKeys(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantModel string
+		wantFW    string
+	}{
+		{"FirewireGUID", "FirewireGUID: 0x000A2700214504AE\n", "", "000A2700214504AE"},
+		{"FirewireGuid", "FirewireGuid: 0x000A2700214504AE\n", "", "000A2700214504AE"},
+		{"FireWireGUID", "FireWireGUID: 0x000A2700214504AE\n", "", "000A2700214504AE"},
+		{"ModelNumStr", "ModelNumStr: MB147LL/A\nFirewireGUID: 0x1234\n", "MB147", "1234"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "SysInfo")
+			if err := os.WriteFile(path, []byte(tt.body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			model, fw := parseSysInfoText(path)
+			if model != tt.wantModel || fw != tt.wantFW {
+				t.Fatalf("parseSysInfoText = (%q, %q), want (%q, %q)", model, fw, tt.wantModel, tt.wantFW)
+			}
+		})
 	}
 }
 
@@ -115,8 +144,8 @@ func TestSyncStockDBClassicCLI(t *testing.T) {
 	if err := runStock(t, "-root", root, "-no-tui"); err != nil {
 		t.Fatalf("sync-stock-db (classic) failed: %v", err)
 	}
-	if _, version := stockDBFile(t, root); version != 0x19 {
-		t.Fatalf("classic version = %#x, want 0x19", version)
+	if _, version := stockDBFile(t, root); version != 0x30 {
+		t.Fatalf("classic version = %#x, want 0x30", version)
 	}
 }
 
@@ -132,8 +161,8 @@ func TestSyncStockDBForceClassicCLI(t *testing.T) {
 	if err := runStock(t, "-root", root, "-no-tui", "-classic"); err != nil {
 		t.Fatalf("sync-stock-db (force classic) failed: %v", err)
 	}
-	if _, version := stockDBFile(t, root); version != 0x19 {
-		t.Fatalf("force-classic version = %#x, want 0x19", version)
+	if _, version := stockDBFile(t, root); version != 0x30 {
+		t.Fatalf("force-classic version = %#x, want 0x30", version)
 	}
 }
 

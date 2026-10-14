@@ -799,12 +799,26 @@ func (m stockTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.base.logLine(logLineSkip.Render("FAILED: " + msg.Err.Error()))
 		} else if msg.Written {
-			m.base.logLine(styleOK.Render(fmt.Sprintf(
+			line := fmt.Sprintf(
 				"wrote stock %s: %d tracks, %d albums, %d skipped",
-				classicLabel(msg.Classic), msg.N, msg.Albums, m.base.skipped)))
+				classicLabel(msg.Classic), msg.N, msg.Albums, m.base.skipped)
+			if msg.Dropped > 0 {
+				line += fmt.Sprintf(", %d tracks rotated out to fit budget", msg.Dropped)
+			}
+			if msg.ArtImages > 0 {
+				line += fmt.Sprintf(", artwork: %d images", msg.ArtImages)
+			}
+			m.base.logLine(styleOK.Render(line))
+			if msg.ArtErr != nil {
+				m.base.logLine(logLineSkip.Render("artwork failed: " + msg.ArtErr.Error()))
+			}
 		} else {
-			m.base.logLine(styleDim.Render(fmt.Sprintf(
-				"dry run: %d tracks, %d albums (%d skipped)", msg.N, msg.Albums, m.base.skipped)))
+			line := fmt.Sprintf(
+				"dry run: %d tracks, %d albums (%d skipped", msg.N, msg.Albums, m.base.skipped)
+			if msg.Dropped > 0 {
+				line += fmt.Sprintf(", %d would rotate out", msg.Dropped)
+			}
+			m.base.logLine(styleDim.Render(line + ")"))
 		}
 		return m, m.base.handleTick()
 

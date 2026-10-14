@@ -4,7 +4,7 @@ package ipod
 // firmware writes the hardware model number (e.g. "MB147") into the
 // iPod_Control/Device/SysInfo file under the "ModelNumStr" key. The model
 // number alone is enough to tell a 5G/5.5G Video iPod (dbv 0x0f, no HASH58,
-// needs a 0x68-byte mhbd header) from a 6G/7G Classic (dbv 0x19, 0xF4 header,
+// needs a 0x68-byte mhbd header) from a 6G/7G Classic (dbv 0x30, 0xF4 header,
 // HASH58): no hardware query is required.
 
 // classicModels lists the known iPod Classic (6G/7G, A1238 "N25") model
@@ -22,7 +22,7 @@ var classicModels = map[string]bool{
 }
 
 // IsClassic reports whether the given model number denotes an iPod Classic
-// (6G/7G), i.e. one that needs the 0x19/HASH58 format. Unknown model numbers
+// (6G/7G), i.e. one that needs the 0x30/HASH58 format. Unknown model numbers
 // are treated as the older 5G/5.5G Video format, which is the safe default
 // when the SysInfo file is missing or unrecognized.
 func IsClassic(model string) bool {
