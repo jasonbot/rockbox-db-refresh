@@ -46,6 +46,10 @@ var stockCommand = &cli.Command{
 			Usage: "device FireWire GUID (hex) used for the 6G/7G HASH58 checksum; auto-read from iPod_Control/Device/SysInfo if omitted",
 		},
 		&cli.BoolFlag{
+			Name:  "classic",
+			Usage: "force 6G/7G Classic format regardless of the SysInfo model number",
+		},
+		&cli.BoolFlag{
 			Name:    "no-tui",
 			Usage:   "plain output instead of the interactive interface",
 			Aliases: []string{"Q"},
@@ -114,9 +118,13 @@ var stockCommand = &cli.Command{
 		}
 
 		// Device type is detected from the model number in SysInfo; this also
-		// yields the FireWire GUID for the 6G/7G HASH58 checksum.
+		// yields the FireWire GUID for the 6G/7G HASH58 checksum. The -classic
+		// flag overrides detection and forces the 6G/7G format.
 		model, fwStr := readSysInfo(absRoot)
 		classic := ipod.IsClassic(model)
+		if c.Bool("classic") {
+			classic = true
+		}
 
 		// FireWire GUID: flag wins, else the auto-read device SysInfo value.
 		if s := c.String("firewire-guid"); s != "" {

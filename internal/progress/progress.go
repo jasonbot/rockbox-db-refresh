@@ -19,8 +19,9 @@ type TagStart struct{ Tag int }
 type TagDone struct{ Tag int }
 
 type Shuffle struct {
-	N   int
-	Err error
+	N    int
+	Path string // host path of the generated catalogue playlist
+	Err  error
 }
 
 type Refresh struct {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v2"
 
@@ -55,7 +56,7 @@ var dbCommand = &cli.Command{
 		},
 		&cli.BoolFlag{
 			Name:    "shuffle",
-			Usage:   "after building, install a shuffled playlist of the library as the player's current dynamic playlist",
+			Usage:   "after building, create a new shuffled playlist in the device's playlist catalogue (shown in the player's Playlists menu)",
 			Aliases: []string{"s"},
 		},
 		&cli.IntFlag{
@@ -149,6 +150,7 @@ var dbCommand = &cli.Command{
 		ctx := context.Background()
 		lastParse := 0
 		shuffleCount := 0
+		shufflePath := ""
 		doneCh := make(chan error, 1)
 		go dbJob(absRoot, opts)(ctx, func(m any) {
 			switch msg := m.(type) {
@@ -171,8 +173,9 @@ var dbCommand = &cli.Command{
 				if msg.Err != nil {
 					fmt.Printf("\rshuffle playlist failed: %v\n", msg.Err)
 				} else {
-					vlogf("shuffled playlist: %d tracks -> /%s", msg.N, shuffle.PlaylistFile)
+					vlogf("shuffled playlist: %d tracks -> %s", msg.N, msg.Path)
 					shuffleCount = msg.N
+					shufflePath = msg.Path
 				}
 			case progress.Done:
 				doneCh <- msg.Err
@@ -185,8 +188,8 @@ var dbCommand = &cli.Command{
 		if !dryRun {
 			fmt.Printf("\rWrote tagcache database to %s/.rockbox            \n", absRoot)
 			if shuffleCount > 0 {
-				fmt.Printf("Installed shuffled playlist (%d tracks): %s/.rockbox/%s\n", shuffleCount, absRoot, shuffle.PlaylistFile)
-				fmt.Println("It becomes the player's current playlist on next boot; playback resume still depends on your device's autoresume/bookmark settings.")
+				fmt.Printf("Created shuffled playlist (%d tracks): %s\n", shuffleCount, shufflePath)
+				fmt.Println("It now appears in the player's Playlists menu.")
 			}
 		} else {
 			fmt.Println("\nDry run complete.")
@@ -324,8 +327,13 @@ func dbJob(root string, opt dbOptions) func(ctx context.Context, send func(any))
 			if serr := shuffle.WriteAddedDates(rbDir, addedDates); serr != nil {
 				vlogf("could not save add dates: %v", serr)
 			}
-			n, serr := shuffle.WriteShuffledPlaylist("/"+filepath.Base(rbDir), rbDir, kept, opt.shuffleLimit, opt.shuffleRecency)
-			send(progress.Shuffle{N: n, Err: serr})
+			catDir := shuffle.CatalogDir(root, rbDir)
+			plName, n, serr := shuffle.WriteCatalogPlaylist(catDir, kept, opt.shuffleLimit, opt.shuffleRecency, time.Now())
+			plPath := ""
+			if serr == nil {
+				plPath = filepath.Join(catDir, plName)
+			}
+			send(progress.Shuffle{N: n, Path: plPath, Err: serr})
 		}
 
 		send(progress.Done{})

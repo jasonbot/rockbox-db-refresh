@@ -20,10 +20,17 @@ import (
 // devices with > 1 MB of memory), so we stay just under that.
 const ShuffleLimitDefault = 9999
 
-// Name of the shuffled playlist written into .rockbox/, referenced by the
-// control file below. Must stay an .m3u8 name so the firmware treats it as
-// UTF-8 (is_m3u8_name() in apps/playlist.c).
-const PlaylistFile = "dynamic.m3u8"
+// Playlist catalogue defaults. The firmware's PLAYLIST_CATALOG_DEFAULT_DIR is
+// HOME_DIR "Playlists" (firmware/export/rbpaths.h), i.e. /Playlists at the
+// volume root on native targets. The menu enumerates this directory live and
+// filters it to .m3u/.m3u8 files (playlist_catalog.c display_playlists()),
+// so dropping a playlist here is enough to make it appear.
+const catalogDefaultDir = "/Playlists"
+
+// PlaylistFileExt is appended to the generated catalogue playlist name. It
+// must be .m3u8 so the firmware treats the file as UTF-8 (is_m3u8_name() in
+// apps/playlist.c).
+const PlaylistFileExt = ".m3u8"
 
 // addedDatesFile persists per-track add dates (unix seconds) as
 // "devPath\tseconds" lines. The tagcache format has no add-time tag, so
@@ -113,13 +120,56 @@ func ApplyAddedDates(rbDir string, tracks []*meta.Track) map[string]int64 {
 	return stored
 }
 
-// Control file format (see "Dynamic playlist design" in apps/playlist.c):
-// first line is P:<version>:<dir>:<file>; a nonempty <file> makes the
-// firmware load the tracks from <dir>/<file> as the current playlist when it
-// replays this file in playlist_resume().
-func WriteShuffledPlaylist(rbDevDir string, rbDir string, tracks []*meta.Track, limit int, recency float64) (int, error) {
+// NewPlaylistName is the catalogue filename used for a freshly generated
+// shuffle, e.g. "2026-10-14 09 New Shuffle.m3u8".
+func NewPlaylistName(t time.Time) string {
+	return t.Format("2006-01-02 15 New Shuffle") + PlaylistFileExt
+}
+
+// CatalogDir resolves the host path of the device's playlist catalogue for a
+// device mounted at root. It honours the "playlist catalog directory" setting
+// in <rbDir>/config.cfg and otherwise falls back to the firmware default
+// (/Playlists at the volume root). Rockbox's "<HOME>" placeholder is treated
+// as the volume root.
+func CatalogDir(root, rbDir string) string {
+	dev := readCatalogDir(rbDir)
+	if dev == "" {
+		dev = catalogDefaultDir
+	}
+	dev = strings.ReplaceAll(dev, "<HOME>", "/")
+	return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(dev, "/")))
+}
+
+// readCatalogDir returns the configured "playlist catalog directory" device
+// path, or "" if the setting is absent. Rockbox writes config.cfg as
+// "<cfg_name>: <value>" lines with CRLF endings (settings_write_config()).
+func readCatalogDir(rbDir string) string {
+	f, err := os.Open(filepath.Join(rbDir, "config.cfg"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(k) == "playlist catalog directory" {
+			return strings.Trim(strings.TrimSpace(v), "\"")
+		}
+	}
+	return ""
+}
+
+// WriteCatalogPlaylist shuffles tracks and writes a new UTF-8 playlist into
+// the catalogue directory so the firmware lists it in the "Playlists" menu.
+// The file is named "<YYYY-MM-DD HH> New Shuffle.m3u8" and holds device-
+// absolute track paths. It returns the playlist name and track count.
+func WriteCatalogPlaylist(catDir string, tracks []*meta.Track, limit int, recency float64, now time.Time) (string, int, error) {
 	if len(tracks) == 0 {
-		return 0, fmt.Errorf("no tracks to shuffle")
+		return "", 0, fmt.Errorf("no tracks to shuffle")
 	}
 	if limit <= 0 || limit > len(tracks) {
 		limit = len(tracks)
@@ -138,15 +188,14 @@ func WriteShuffledPlaylist(rbDevDir string, rbDir string, tracks []*meta.Track, 
 		b = append(b, p...)
 		b = append(b, '\n')
 	}
-	if err := os.WriteFile(filepath.Join(rbDir, PlaylistFile), b, 0644); err != nil {
-		return 0, err
+	if err := os.MkdirAll(catDir, 0755); err != nil {
+		return "", 0, err
 	}
-
-	control := fmt.Sprintf("P:6:%s:%s\n", rbDevDir, PlaylistFile)
-	if err := os.WriteFile(filepath.Join(rbDir, ".playlist_control"), []byte(control), 0644); err != nil {
-		return 0, err
+	name := NewPlaylistName(now)
+	if err := os.WriteFile(filepath.Join(catDir, name), b, 0644); err != nil {
+		return "", 0, err
 	}
-	return len(picked), nil
+	return name, len(picked), nil
 }
 
 // recencyShuffle produces a uniformly random permutation when recency <= 0.

@@ -120,6 +120,23 @@ func TestSyncStockDBClassicCLI(t *testing.T) {
 	}
 }
 
+// TestSyncStockDBForceClassicCLI: the -classic flag forces the 6G/7G format
+// even when SysInfo reports a 5G Video model.
+func TestSyncStockDBForceClassicCLI(t *testing.T) {
+	root := t.TempDir()
+	buildFixture(t, root, []*meta.Track{
+		{DevPath: "/Music/A1.mp3", Meta: meta.Meta{Title: "One", Artist: "ArtistA", Album: "Album1"}, TrackNum: 1},
+		{DevPath: "/Music/A2.mp3", Meta: meta.Meta{Title: "Two", Artist: "ArtistA", Album: "Album1"}, TrackNum: 2},
+	})
+	writeSysInfo(t, root, "MA146LL/A", "0x1234567890ABCDEF")
+	if err := runStock(t, "-root", root, "-no-tui", "-classic"); err != nil {
+		t.Fatalf("sync-stock-db (force classic) failed: %v", err)
+	}
+	if _, version := stockDBFile(t, root); version != 0x19 {
+		t.Fatalf("force-classic version = %#x, want 0x19", version)
+	}
+}
+
 // TestSyncStockDBDryRun verifies -dry-run does not write the iTunesDB.
 func TestSyncStockDBDryRun(t *testing.T) {
 	root := t.TempDir()

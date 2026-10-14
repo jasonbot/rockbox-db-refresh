@@ -31,7 +31,7 @@ rbdb db [options] [root]
 | `-root DIR`          |         | device root directory (same as positional arg)           |
 | `-dry-run`           | off     | scan + parse only, write nothing                         |
 | `-refresh`           | off     | incremental update (reuse unchanged files, drop deleted) |
-| `-shuffle`           | off     | install a shuffled library playlist after building       |
+| `-shuffle`           | off     | create a new shuffled playlist in the playlist catalogue |
 | `-shuffle-limit N`   | 9999    | max tracks in shuffled playlist                          |
 | `-shuffle-recency F` | 2.0     | recency bias (0 = uniform)                               |
 | `-max-tag BYTES`     | 512     | truncation limit for non-path string tags                |
@@ -44,7 +44,7 @@ from `~/.config/rockbox-db-refresh/last.txt` → `.`.
 ```sh
 rbdb db /media/player              # TUI full rebuild
 rbdb db -refresh /media/player     # incremental update
-rbdb db -shuffle /media/player     # rebuild + shuffled playlist
+rbdb db -shuffle /media/player     # rebuild + new catalogue playlist
 ```
 
 ### rbdb fix
@@ -120,6 +120,7 @@ rbdb sync-stock-db [options] [root]
 | `-root DIR`          |         | device root directory (same as positional arg)             |
 | `-dry-run`           | off     | parse + generate in memory only, write nothing             |
 | `-firewire-guid HEX` |         | device FireWire GUID; auto-read from SysInfo if omitted    |
+| `-classic`          | off     | force 6G/7G Classic format (skip model detection)         |
 | `-no-tui`            | off     | plain output                                               |
 | `-v`                 | off     | verbose output                                             |
 
@@ -136,6 +137,7 @@ no GUID. The iTunesDB is written to `<root>/iPod_Control/iTunes/iTunesDB`.
 
 ```sh
 rbdb sync-stock-db /media/classic          # format + GUID detected from SysInfo
+rbdb sync-stock-db -classic /media/iPod    # force 6G/7G Classic format
 rbdb sync-stock-db -firewire-guid 0x… /mnt # override the GUID
 rbdb sync-stock-db -dry-run /media/iPod    # validate/report, write nothing
 ```
@@ -237,7 +239,7 @@ cmd/                     CLI subcommands (db, fix, sync, sync-stock-db) via urfa
 internal/meta/           Track type + tag parsers (ID3, APE, FLAC/Vorbis, Ogg, MP4)
 internal/db/             tagcache writer (Build) and reader (ReadDatabase)
 internal/ipod/           iTunesDB serializer (mhbd/mhit/mhod/mhia/mhyp/mhip), HASH58, device-type detection
-internal/shuffle/        shuffled playlist install, recency weighting, added.tsv store
+internal/shuffle/        shuffled catalogue playlist, recency weighting, added.tsv store
 internal/tui/            interactive terminal UI (progress, log, cancel)
 internal/config/         last-root cache
 internal/progress/       message types piped from pipeline to UIs

@@ -14,7 +14,6 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"rbdb/internal/progress"
-	"rbdb/internal/shuffle"
 )
 
 // tickMsg drives periodic UI refreshes.
@@ -376,7 +375,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.base.logLine(logLineSkip.Render(fmt.Sprintf("SHUFFLE FAILED: %v", msg.Err)))
 		} else {
-			m.base.logLine(styleOK.Render(fmt.Sprintf("shuffled playlist installed: %d tracks (%s)", msg.N, shuffle.PlaylistFile)))
+			m.base.logLine(styleOK.Render(fmt.Sprintf("created shuffled playlist: %d tracks (%s)", msg.N, msg.Path)))
 		}
 
 	case progress.Refresh:
