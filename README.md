@@ -92,7 +92,7 @@ rbdb sync [options] <origin> <destination>
 | `-dry-run`         | off     | scan only                                           |
 | `-overwrite`       | off     | overwrite existing files                            |
 | `-delete`          | off     | remove destination files not in origin              |
-| `-update`          | off     | rebuild rockbox database after sync                 |
+| `-update`          | off     | refresh the device's `.rockbox` tagcache after sync |
 | `-normalize MODE`  | none    | metadata normalization: `none`, `fill`, `overwrite` |
 | `-no-art`          | off     | skip cover art fetching                             |
 | `-min-score N`     | 50      | minimum MusicBrainz search score                    |

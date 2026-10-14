@@ -275,44 +275,63 @@ func applyID3Frame(res *id3Result, year *int, trk *int, disc *int, ver int, id s
 		}
 		enc := data[0]
 		rest := data[1:]
-		// Find null terminator for MIME type
-		mimeEnd := -1
-		if enc == 0 || enc == 3 {
-			mimeEnd = strings.IndexByte(string(rest), 0)
-		} else {
-			// UTF-16: look for two null bytes
-			for i := 0; i+1 < len(rest); i += 2 {
-				if rest[i] == 0 && rest[i+1] == 0 {
-					mimeEnd = i
-					break
-				}
+		var mimeType string
+		if id == "PIC" {
+			// ID3v2.2 stores a 3-byte image format ("JPG", "PNG", ...).
+			if len(rest) < 4 {
+				return
 			}
+			mimeType = picFormatMIME(string(rest[:3]))
+			rest = rest[3:]
+		} else {
+			// ID3v2.3+ stores a null-terminated MIME type.
+			end := strings.IndexByte(string(rest), 0)
+			if end < 0 {
+				return
+			}
+			mimeType = string(rest[:end])
+			rest = rest[end+1:]
 		}
-		if mimeEnd < 0 {
+		if len(rest) < 1 {
 			return
 		}
-		mimeType := string(rest[:mimeEnd])
-		rest = rest[mimeEnd+1:]
-		if len(rest) < 2 {
-			return
-		}
-		picType := rest[0]
-		_ = picType // 3 = Cover (front)
-		descLen := int(rest[1])
-		picStart := 2 + descLen
+		rest = rest[1:] // picture type
+		// The description is a null-terminated string in the frame encoding
+		// (two null bytes for UTF-16), not length-prefixed.
+		picStart := -1
 		if enc == 1 || enc == 2 {
-			// UTF-16 descriptions are null-terminated with 2 bytes
-			for i := 2; i+1 < len(rest); i += 2 {
+			for i := 0; i+1 < len(rest); i += 2 {
 				if rest[i] == 0 && rest[i+1] == 0 {
 					picStart = i + 2
 					break
 				}
 			}
+		} else if i := strings.IndexByte(string(rest), 0); i >= 0 {
+			picStart = i + 1
 		}
-		if picStart < len(rest) {
-			res.coverArt = rest[picStart:]
+		if picStart < 0 || picStart >= len(rest) {
+			return
+		}
+		res.coverArt = rest[picStart:]
+		if mimeType != "" {
 			res.coverArtMIME = mimeType
 		}
+	}
+}
+
+// picFormatMIME maps an ID3v2.2 PIC image format tag to a MIME type.
+func picFormatMIME(f string) string {
+	switch strings.ToUpper(f) {
+	case "JPG", "JPEG":
+		return "image/jpeg"
+	case "PNG":
+		return "image/png"
+	case "GIF":
+		return "image/gif"
+	case "BMP":
+		return "image/bmp"
+	default:
+		return strings.ToLower(f)
 	}
 }
 

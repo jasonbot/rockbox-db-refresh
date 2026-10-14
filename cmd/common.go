@@ -12,6 +12,10 @@ import (
 func PlainProgressHandler(label, dir string, doneCh chan error) func(any) {
 	return func(m any) {
 		switch msg := m.(type) {
+		case progress.Banner:
+			for _, line := range msg.Lines {
+				fmt.Println(line)
+			}
 		case progress.Found:
 			fmt.Printf("Found %d %s files in %s\n", msg.N, label, dir)
 		case progress.FileStart:
@@ -28,6 +32,9 @@ func PlainProgressHandler(label, dir string, doneCh chan error) func(any) {
 			vlogf("Art fetched: %s", filepath.Base(msg.Path))
 		case progress.MetadataNormalized:
 			vlogf("Normalized: %s", filepath.Base(msg.Path))
+		case progress.Refresh:
+			vlogf("database refresh: kept %d, updated %d, added %d, removed %d",
+				msg.Kept, msg.Updated, msg.Added, msg.Removed)
 		case progress.Done:
 			doneCh <- msg.Err
 		}

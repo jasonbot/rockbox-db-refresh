@@ -163,11 +163,15 @@ func ConvertFile(ctx context.Context, inputPath, outputPath string, opts Options
 	}
 
 	if track.CoverArt != nil {
-		processed, err := artwork.ProcessCoverArt(track.CoverArt, opts.MaxArtDimension, opts.MaxArtFileSize)
-		if err == nil {
-			if err := artwork.EmbedCoverArtToMP3(noCoverPath, processed, track.CoverArtMIME); err != nil {
-				return os.Rename(noCoverPath, outputPath)
+		processed, procErr := artwork.ProcessCoverArt(track.CoverArt, opts.MaxArtDimension, opts.MaxArtFileSize)
+		if procErr == nil && processed != nil {
+			if err := artwork.EmbedCoverArtToMP3(noCoverPath, processed, "image/jpeg"); err != nil {
+				// fallback to raw art
+				_ = artwork.EmbedCoverArtToMP3(noCoverPath, track.CoverArt, track.CoverArtMIME)
 			}
+		} else {
+			// process failed; try raw art
+			_ = artwork.EmbedCoverArtToMP3(noCoverPath, track.CoverArt, track.CoverArtMIME)
 		}
 	}
 

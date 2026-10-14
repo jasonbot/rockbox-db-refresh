@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -231,6 +232,9 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 		}
 
 		var converted, skipped, failed atomic.Int64
+		// Keep the job context: errgroup cancels its derived context once Wait
+		// returns, but the database update below runs afterwards.
+		jobCtx := ctx
 		g, ctx := errgroup.WithContext(ctx)
 		sem := make(chan struct{}, runtime.NumCPU())
 
@@ -271,7 +275,7 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 					return ctx.Err()
 				}
 
-				musicbrainz.Enrich(ctx, opts.musicBrainz, track, job.inputPath, musicbrainz.EnrichOptions{
+				enrich, _ := musicbrainz.Enrich(ctx, opts.musicBrainz, track, job.inputPath, musicbrainz.EnrichOptions{
 					Mode:     opts.normalize,
 					FetchArt: !opts.noArt && track.CoverArt == nil,
 					MinScore: opts.minScore,
@@ -291,7 +295,7 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 					return nil
 				}
 
-				if track.CoverArt != nil {
+				if enrich != nil && enrich.ArtworkFetched && track.CoverArt != nil {
 					if err := artwork.EmbedCoverArtToMP3(job.outputPath, track.CoverArt, track.CoverArtMIME); err != nil {
 						vlogf("Warning: failed to embed art for %s: %v", filepath.Base(job.inputPath), err)
 					}
@@ -310,9 +314,29 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 		}
 
 		if opts.updateDB && !opts.dryRun {
-			rbDir := findRockboxRoot(opts.destination)
-			if rbDir != "" {
-				vlogf("Updating rockbox database in %s", rbDir)
+			if rbRoot := findRockboxRoot(opts.destination); rbRoot != "" {
+				send(progress.Banner{Lines: []string{"updating rockbox database in " + rbRoot}})
+				dbSend := func(m any) {
+					switch m.(type) {
+					case progress.Found, progress.Parse:
+						return
+					default:
+						send(m)
+					}
+				}
+				if err := runDB(jobCtx, rbRoot, dbOptions{refresh: true}, dbSend); err != nil {
+					if errors.Is(err, context.Canceled) {
+						send(progress.Cancelled{})
+						return
+					}
+					send(progress.Done{Err: fmt.Errorf("database update failed: %w", err)})
+					return
+				}
+				send(progress.Banner{Lines: []string{"rockbox database updated"}})
+			} else {
+				send(progress.Banner{Lines: []string{
+					fmt.Sprintf("no .rockbox directory found at or above %s; skipped database update", opts.destination),
+				}})
 			}
 		}
 
@@ -333,14 +357,20 @@ func deleteExtraFiles(destDir string, keepFiles map[string]bool) {
 	})
 }
 
+// findRockboxRoot returns the device root (the directory containing .rockbox)
+// at or above dir. It walks all the way up to the filesystem root so it works
+// for destinations buried anywhere below the mount point.
 func findRockboxRoot(dir string) string {
 	parent := dir
-	for range 3 {
+	for {
 		rbDir := filepath.Join(parent, ".rockbox")
 		if st, err := os.Stat(rbDir); err == nil && st.IsDir() {
 			return parent
 		}
-		parent = filepath.Dir(parent)
+		up := filepath.Dir(parent)
+		if up == parent {
+			return ""
+		}
+		parent = up
 	}
-	return ""
 }

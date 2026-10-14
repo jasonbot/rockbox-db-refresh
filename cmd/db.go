@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -200,144 +201,153 @@ var dbCommand = &cli.Command{
 
 func dbJob(root string, opt dbOptions) func(ctx context.Context, send func(any)) {
 	return func(ctx context.Context, send func(any)) {
-		rbDir := filepath.Join(root, ".rockbox")
-		var files []string
-		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				vlogf("walk error: %s: %v", path, err)
-				return nil
-			}
-			name := d.Name()
-			if d.IsDir() {
-				if name == ".rockbox" || strings.HasPrefix(name, ".") {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if strings.HasPrefix(name, ".") {
-				return nil
-			}
-			if meta.AudioExts[strings.ToLower(filepath.Ext(name))] {
-				files = append(files, path)
+		err := runDB(ctx, root, opt, send)
+		if errors.Is(err, context.Canceled) {
+			send(progress.Cancelled{})
+			return
+		}
+		send(progress.Done{Err: err})
+	}
+}
+
+// runDB performs a tagcache build or refresh, emitting Found/Parse progress
+// plus TagStart/TagDone, Refresh and Shuffle messages. It deliberately does
+// not emit Done or Cancelled: callers such as sync run it as a sub-step and
+// decide when the overall job is finished. A context cancellation is returned
+// as context.Canceled.
+func runDB(ctx context.Context, root string, opt dbOptions, send func(any)) error {
+	rbDir := filepath.Join(root, ".rockbox")
+	var files []string
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			vlogf("walk error: %s: %v", path, err)
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if name == ".rockbox" || strings.HasPrefix(name, ".") {
+				return fs.SkipDir
 			}
 			return nil
-		})
-		send(progress.Found{N: len(files)})
-		if len(files) == 0 {
-			send(progress.Done{Err: fmt.Errorf("no supported audio files found under %s", root)})
-			return
 		}
-
-		oldByPath := map[string]*meta.Track{}
-		refreshing := false
-		if opt.refresh {
-			old, err := db.ReadDatabase(rbDir)
-			if err != nil {
-				vlogf("refresh: no usable existing database (%v); full rebuild", err)
-			} else {
-				for _, t := range old {
-					oldByPath[t.DevPath] = t
-				}
-				refreshing = true
-				vlogf("refresh: %d entries in existing database", len(old))
-			}
+		if strings.HasPrefix(name, ".") {
+			return nil
 		}
-
-		tracks := make([]*meta.Track, 0, len(files))
-		reused, updated, added := 0, 0, 0
-		for _, host := range files {
-			select {
-			case <-ctx.Done():
-				send(progress.Cancelled{})
-				return
-			default:
-			}
-			rel, err := filepath.Rel(root, host)
-			if err != nil {
-				continue
-			}
-			devPath := "/" + filepath.ToSlash(rel)
-
-			if refreshing {
-				if ot, ok := oldByPath[devPath]; ok {
-					delete(oldByPath, devPath)
-					if st, serr := os.Stat(host); serr == nil && st.ModTime().Unix() == ot.MTime {
-						tracks = append(tracks, ot)
-						reused++
-						send(progress.Parse{Done: len(tracks), Total: len(files), Path: devPath, Reused: true})
-						continue
-					}
-					updated++
-				} else {
-					added++
-				}
-			}
-
-			t, perr := parseTrackSafe(host, devPath)
-			if perr != nil {
-				tracks = append(tracks, nil)
-				send(progress.Skip{Path: devPath, Err: perr})
-				send(progress.Parse{Done: len(tracks), Total: len(files), Path: devPath})
-				continue
-			}
-			tracks = append(tracks, t)
-			send(progress.Parse{Done: len(tracks), Total: len(files), Path: devPath})
+		if meta.AudioExts[strings.ToLower(filepath.Ext(name))] {
+			files = append(files, path)
 		}
-		removed := len(oldByPath)
+		return nil
+	})
+	send(progress.Found{N: len(files)})
+	if len(files) == 0 {
+		return fmt.Errorf("no supported audio files found under %s", root)
+	}
 
-		if opt.dryRun {
-			if refreshing {
-				send(progress.Refresh{Kept: reused, Updated: updated, Added: added, Removed: removed})
-			}
-			send(progress.Done{})
-			return
-		}
-
-		if err := os.MkdirAll(rbDir, 0755); err != nil {
-			send(progress.Done{Err: err})
-			return
-		}
-		os.Remove(filepath.Join(rbDir, "database_tmp.tcd"))
-
-		kept := tracks[:0]
-		for _, t := range tracks {
-			if t != nil {
-				kept = append(kept, t)
-			}
-		}
-
-		err := db.Build(rbDir, kept, func(tag int, done bool) {
-			if done {
-				send(progress.TagDone{Tag: tag})
-			} else {
-				send(progress.TagStart{Tag: tag})
-			}
-		})
+	oldByPath := map[string]*meta.Track{}
+	refreshing := false
+	if opt.refresh {
+		old, err := db.ReadDatabase(rbDir)
 		if err != nil {
-			send(progress.Done{Err: err})
-			return
+			vlogf("refresh: no usable existing database (%v); full rebuild", err)
+		} else {
+			for _, t := range old {
+				oldByPath[t.DevPath] = t
+			}
+			refreshing = true
+			vlogf("refresh: %d entries in existing database", len(old))
+		}
+	}
+
+	tracks := make([]*meta.Track, 0, len(files))
+	reused, updated, added := 0, 0, 0
+	for _, host := range files {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		rel, err := filepath.Rel(root, host)
+		if err != nil {
+			continue
+		}
+		devPath := "/" + filepath.ToSlash(rel)
+
+		if refreshing {
+			if ot, ok := oldByPath[devPath]; ok {
+				delete(oldByPath, devPath)
+				if st, serr := os.Stat(host); serr == nil && st.ModTime().Unix() == ot.MTime {
+					tracks = append(tracks, ot)
+					reused++
+					send(progress.Parse{Done: len(tracks), Total: len(files), Path: devPath, Reused: true})
+					continue
+				}
+				updated++
+			} else {
+				added++
+			}
 		}
 
+		t, perr := parseTrackSafe(host, devPath)
+		if perr != nil {
+			tracks = append(tracks, nil)
+			send(progress.Skip{Path: devPath, Err: perr})
+			send(progress.Parse{Done: len(tracks), Total: len(files), Path: devPath})
+			continue
+		}
+		tracks = append(tracks, t)
+		send(progress.Parse{Done: len(tracks), Total: len(files), Path: devPath})
+	}
+	removed := len(oldByPath)
+
+	if opt.dryRun {
 		if refreshing {
 			send(progress.Refresh{Kept: reused, Updated: updated, Added: added, Removed: removed})
 		}
-
-		if opt.shuffle {
-			addedDates := shuffle.ApplyAddedDates(rbDir, kept)
-			if serr := shuffle.WriteAddedDates(rbDir, addedDates); serr != nil {
-				vlogf("could not save add dates: %v", serr)
-			}
-			catDir := shuffle.CatalogDir(root, rbDir)
-			plName, n, serr := shuffle.WriteCatalogPlaylist(catDir, kept, opt.shuffleLimit, opt.shuffleRecency, time.Now())
-			plPath := ""
-			if serr == nil {
-				plPath = filepath.Join(catDir, plName)
-			}
-			send(progress.Shuffle{N: n, Path: plPath, Err: serr})
-		}
-
-		send(progress.Done{})
+		return nil
 	}
+
+	if err := os.MkdirAll(rbDir, 0755); err != nil {
+		return err
+	}
+	os.Remove(filepath.Join(rbDir, "database_tmp.tcd"))
+
+	kept := tracks[:0]
+	for _, t := range tracks {
+		if t != nil {
+			kept = append(kept, t)
+		}
+	}
+
+	err := db.Build(rbDir, kept, func(tag int, done bool) {
+		if done {
+			send(progress.TagDone{Tag: tag})
+		} else {
+			send(progress.TagStart{Tag: tag})
+		}
+	})
+	if err != nil {
+		return err
+	}
+
+	if refreshing {
+		send(progress.Refresh{Kept: reused, Updated: updated, Added: added, Removed: removed})
+	}
+
+	if opt.shuffle {
+		addedDates := shuffle.ApplyAddedDates(rbDir, kept)
+		if serr := shuffle.WriteAddedDates(rbDir, addedDates); serr != nil {
+			vlogf("could not save add dates: %v", serr)
+		}
+		catDir := shuffle.CatalogDir(root, rbDir)
+		plName, n, serr := shuffle.WriteCatalogPlaylist(catDir, kept, opt.shuffleLimit, opt.shuffleRecency, time.Now())
+		plPath := ""
+		if serr == nil {
+			plPath = filepath.Join(catDir, plName)
+		}
+		send(progress.Shuffle{N: n, Path: plPath, Err: serr})
+	}
+
+	return nil
 }
 
 func parseTrackSafe(host, devPath string) (t *meta.Track, err error) {

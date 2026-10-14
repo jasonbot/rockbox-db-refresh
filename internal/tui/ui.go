@@ -651,6 +651,11 @@ func (m syncTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progress.MetadataNormalized:
 		m.base.logLine(styleOK.Render(fmt.Sprintf("normalized: %s", filepath.Base(msg.Path))))
 
+	case progress.Refresh:
+		m.base.logLine(styleOK.Render(fmt.Sprintf(
+			"database: %d kept, %d updated, %d added, %d removed",
+			msg.Kept, msg.Updated, msg.Added, msg.Removed)))
+
 	case progress.Banner:
 		for _, line := range msg.Lines {
 			m.base.logLine(styleDim.Render(line))
