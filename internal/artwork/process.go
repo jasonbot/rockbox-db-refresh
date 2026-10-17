@@ -13,6 +13,17 @@ const (
 	DefaultMaxArtFileSize = 500 * 1024 // 500KB
 )
 
+// ValidImage reports whether data decodes as a known image format. Embedded
+// art written by some taggers is corrupt; such payloads are undisplayable and
+// should be treated as absent.
+func ValidImage(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	_, _, err := image.Decode(bytes.NewReader(data))
+	return err == nil
+}
+
 func ProcessCoverArt(data []byte, maxDim, maxFileSize int) ([]byte, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {

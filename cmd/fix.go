@@ -204,6 +204,14 @@ func fixJob(opts fixOptions) func(ctx context.Context, send func(any)) {
 					return nil
 				}
 
+				// Treat corrupt embedded art as absent: undecodable payloads
+				// cannot be displayed by any player, so refetch instead of
+				// skipping the file forever.
+				if track.CoverArt != nil && !artwork.ValidImage(track.CoverArt) {
+					track.CoverArt = nil
+					track.CoverArtMIME = ""
+				}
+
 				if opts.normalize == "none" && track.CoverArt != nil {
 					send(progress.SkippedHasArt{Path: path})
 					send(progress.FileDone{Path: path, Skipped: true})

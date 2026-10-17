@@ -131,6 +131,19 @@ func ConvertFile(ctx context.Context, inputPath, outputPath string, opts Options
 		}
 	}
 
+	// Validate existing embedded art up front. Some taggers write corrupt
+	// APIC payloads that no image decoder can read (and that Rockbox cannot
+	// display); those are dropped here so the fetch below can replace them.
+	var goodArt []byte
+	if track.CoverArt != nil {
+		if processed, err := artwork.ProcessCoverArt(track.CoverArt, opts.MaxArtDimension, opts.MaxArtFileSize); err == nil {
+			goodArt = processed
+		} else {
+			track.CoverArt = nil
+			track.CoverArtMIME = ""
+		}
+	}
+
 	if opts.MusicBrainz != nil && opts.EnrichArt && track.CoverArt == nil {
 		if match == nil || !match.HasMatch {
 			match, err = opts.MusicBrainz.NormalizeMetadata(ctx, track, musicbrainz.SearchOptions{MinScore: opts.MinScore})
@@ -142,6 +155,7 @@ func ConvertFile(ctx context.Context, inputPath, outputPath string, opts Options
 				if procErr == nil {
 					track.CoverArt = processed
 					track.CoverArtMIME = "image/jpeg"
+					goodArt = processed
 				}
 			}
 		}
@@ -162,16 +176,11 @@ func ConvertFile(ctx context.Context, inputPath, outputPath string, opts Options
 		return err
 	}
 
-	if track.CoverArt != nil {
-		processed, procErr := artwork.ProcessCoverArt(track.CoverArt, opts.MaxArtDimension, opts.MaxArtFileSize)
-		if procErr == nil && processed != nil {
-			if err := artwork.EmbedCoverArtToMP3(noCoverPath, processed, "image/jpeg"); err != nil {
-				// fallback to raw art
-				_ = artwork.EmbedCoverArtToMP3(noCoverPath, track.CoverArt, track.CoverArtMIME)
-			}
-		} else {
-			// process failed; try raw art
-			_ = artwork.EmbedCoverArtToMP3(noCoverPath, track.CoverArt, track.CoverArtMIME)
+	// Only decodable, re-encoded baseline JPEG art is embedded — never raw
+	// payloads, which may be progressive JPEGs or outright corrupt.
+	if goodArt != nil {
+		if err := artwork.EmbedCoverArtToMP3(noCoverPath, goodArt, "image/jpeg"); err != nil {
+			return err
 		}
 	}
 

@@ -69,6 +69,8 @@ rbdb fix [options] <path>
 - `fill` only fills empty fields (won't overwrite existing tags)
 - `overwrite` replaces all metadata with MusicBrainz data
 - Uses ffmpeg `-c copy` to rewrite tags without re-encoding audio
+- Corrupt embedded art (undecodable APIC payloads left by broken taggers) is
+  treated as missing and refetched rather than preserved
 
 ```sh
 rbdb fix /path/to/mp3s             # interactive fix with defaults
@@ -99,6 +101,11 @@ rbdb sync [options] <origin> <destination>
 | `-no-tui`          | off     | plain output                                        |
 | `-v`               | off     | verbose output                                      |
 
+Embedded art is normalized to what players actually display: decodable art is
+re-encoded to a baseline (non-progressive) JPEG, and corrupt payloads left by
+broken taggers are dropped (and refetched when art fetching is enabled)
+instead of being copied verbatim.
+
 ```sh
 rbdb sync /music/library /mnt/player/Music
 rbdb sync -overwrite -normalize fill /music /mnt/player/Music
@@ -124,6 +131,7 @@ rbdb sync-stock-db [options] [root]
 | `-stock-max-bytes N` | 58000000   | iTunesDB byte budget; oversized libraries are rotated      |
 | `-stock-recency F`   | 2.0        | rotation bias: newer albums kept more likely; 0 = uniform  |
 | `-no-stock-rotate`   | off        | fail instead of rotating when over the byte budget         |
+| `-artwork`           | off        | write ArtworkDB + ithmb cover files (Cover Flow; Classic)  |
 | `-no-tui`            | off        | plain output                                               |
 | `-v`                 | off        | verbose output                                             |
 
@@ -147,12 +155,21 @@ The Classic checksum needs the FireWire GUID, read automatically from SysInfo
 (`FirewireGuid` key), or overridable with `-firewire-guid`. The 5G format needs
 no GUID. The iTunesDB is written to `<root>/iPod_Control/iTunes/iTunesDB`.
 
+With `-artwork` (Classic only), embedded album art is extracted per album from
+the MP3 files (deduplicated by content, shared across compilation albums),
+converted to the device's RGB565 ithmb formats (56/128/320 px), and written to
+`<root>/iPod_Control/Artwork/` (`ArtworkDB` + `F*.ithmb`) so Cover Flow and the
+Now Playing screen show covers. Tracks are linked via the mhit `mhii_link`
+field, which lives in the fixed-size header, so artwork never changes the
+iTunesDB size or the rotation budget.
+
 ```sh
 rbdb sync-stock-db /media/classic          # format + GUID detected from SysInfo
 rbdb sync-stock-db -classic /media/iPod    # force 6G/7G Classic format
 rbdb sync-stock-db -firewire-guid 0x… /mnt # override the GUID
 rbdb sync-stock-db -dry-run /media/iPod    # validate/report, write nothing
 rbdb sync-stock-db -stock-max-bytes 56000000 /media/classic  # tighter budget
+rbdb sync-stock-db -artwork /media/classic # also write Cover Flow artwork
 ```
 
 ## MusicBrainz integration
@@ -258,7 +275,7 @@ internal/config/         last-root cache
 internal/progress/       message types piped from pipeline to UIs
 internal/convert/        ffmpeg-based MP3 encoding
 internal/walker/         directory walking and file discovery
-internal/artwork/        cover art processing and ID3 APIC embedding
+internal/artwork/        cover art processing, ID3 APIC embed/extract, ArtworkDB/ithmb writer
 internal/musicbrainz/    MusicBrainz API client, cover art archive, metadata normalization
 ```
 

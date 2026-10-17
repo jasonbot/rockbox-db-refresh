@@ -71,7 +71,7 @@ func ExtractMP3Cover(path string) ([]byte, error) {
 			body = deunsync(body)
 		}
 		if id == "APIC" {
-			if img, ptype := parseAPIC(body); img != nil {
+			if img, ptype := parseAPIC(body); img != nil && LooksLikeImage(img) {
 				if ptype == 3 { // front cover wins outright
 					return img, nil
 				}
@@ -83,6 +83,33 @@ func ExtractMP3Cover(path string) ([]byte, error) {
 		pos += 10 + size
 	}
 	return first, nil
+}
+
+// LooksLikeImage reports whether the bytes start with a known image
+// signature (JPEG, PNG, GIF, BMP, WebP, TIFF). APIC frames written by some
+// taggers contain garbage payloads; those are treated as "no art".
+func LooksLikeImage(b []byte) bool {
+	if len(b) < 12 {
+		return len(b) >= 4 && (bytes.HasPrefix(b, []byte{0xFF, 0xD8, 0xFF}) ||
+			bytes.HasPrefix(b, []byte{0x89, 'P', 'N', 'G'}) ||
+			bytes.HasPrefix(b, []byte{'G', 'I', 'F', '8'}) ||
+			bytes.HasPrefix(b, []byte{'B', 'M'}))
+	}
+	switch {
+	case bytes.HasPrefix(b, []byte{0xFF, 0xD8, 0xFF}):
+		return true
+	case bytes.HasPrefix(b, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
+		return true
+	case bytes.HasPrefix(b, []byte{'G', 'I', 'F', '8'}):
+		return true
+	case bytes.HasPrefix(b, []byte{'B', 'M'}):
+		return true
+	case bytes.HasPrefix(b, []byte{'R', 'I', 'F', 'F'}) && bytes.Equal(b[8:12], []byte{'W', 'E', 'B', 'P'}):
+		return true
+	case bytes.HasPrefix(b, []byte{'I', 'I', 0x2A, 0x00}), bytes.HasPrefix(b, []byte{'M', 'M', 0x00, 0x2A}):
+		return true
+	}
+	return false
 }
 
 // parseAPIC splits an APIC frame body into the embedded image and the
