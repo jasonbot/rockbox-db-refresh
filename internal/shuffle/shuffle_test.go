@@ -80,6 +80,48 @@ func TestWriteCatalogPlaylist(t *testing.T) {
 	}
 }
 
+func TestPickShuffled(t *testing.T) {
+	tracks := []*meta.Track{
+		{DevPath: "/Music/a.mp3"},
+		{DevPath: "/Music/b.mp3"},
+		{DevPath: "/Music/c.mp3"},
+		{DevPath: "/Music/d.mp3"},
+	}
+
+	// The limit caps the pick; members are distinct tracks from the input.
+	picked := PickShuffled(tracks, 2, 2.0)
+	if len(picked) != 2 {
+		t.Fatalf("len(picked) = %d, want 2", len(picked))
+	}
+	seen := map[*meta.Track]bool{}
+	for _, p := range picked {
+		if seen[p] {
+			t.Fatalf("duplicate pick %v", p.DevPath)
+		}
+		seen[p] = true
+	}
+	for i, p := range picked {
+		if p != tracks[0] && p != tracks[1] && p != tracks[2] && p != tracks[3] {
+			t.Fatalf("picked[%d] = %v is not an input track", i, p.DevPath)
+		}
+	}
+
+	// The input slice order is not disturbed.
+	wantOrder := []string{"/Music/a.mp3", "/Music/b.mp3", "/Music/c.mp3", "/Music/d.mp3"}
+	for i, tr := range tracks {
+		if tr.DevPath != wantOrder[i] {
+			t.Fatalf("input mutated: tracks[%d] = %q, want %q", i, tr.DevPath, wantOrder[i])
+		}
+	}
+
+	// A non-positive or oversized limit means all tracks.
+	for _, limit := range []int{0, -1, 99} {
+		if got := PickShuffled(tracks, limit, 0); len(got) != len(tracks) {
+			t.Fatalf("limit %d: len = %d, want %d", limit, len(got), len(tracks))
+		}
+	}
+}
+
 func albumKeyOf(t *meta.Track) string { return t.Meta.Album }
 
 func albumOf(t *meta.Track) string { return t.Meta.Album }

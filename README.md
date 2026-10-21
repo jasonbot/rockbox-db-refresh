@@ -132,6 +132,9 @@ rbdb sync-stock-db [options] [root]
 | `-stock-recency F`   | 2.0        | rotation bias: newer albums kept more likely; 0 = uniform  |
 | `-no-stock-rotate`   | off        | fail instead of rotating when over the byte budget         |
 | `-artwork`           | off        | write ArtworkDB + ithmb cover files (Cover Flow; Classic)  |
+| `-shuffle`           | off        | add a shuffled "New Shuffle" playlist to the stock DB      |
+| `-shuffle-limit N`   | 9999       | max tracks in the "New Shuffle" playlist                   |
+| `-shuffle-recency F` | 2.0        | recency bias for the shuffle (0 = uniform)                 |
 | `-no-tui`            | off        | plain output                                               |
 | `-v`                 | off        | verbose output                                             |
 
@@ -155,6 +158,15 @@ The Classic checksum needs the FireWire GUID, read automatically from SysInfo
 (`FirewireGuid` key), or overridable with `-firewire-guid`. The 5G format needs
 no GUID. The iTunesDB is written to `<root>/iPod_Control/iTunes/iTunesDB`.
 
+With `-shuffle`, the stock database also gets a **"New Shuffle"** playlist that
+appears in the stock firmware's own Playlists menu: a recency-weighted shuffled
+pick (the same Efraimidis–Spirakis scheme as `db --shuffle`, sharing
+`.rockbox/added.tsv`) of the tracks that made the database, capped at
+`-shuffle-limit`. Since the iTunesDB is rebuilt from scratch on every sync, the
+single playlist of that name is overwritten — never duplicated — each run, and
+its byte cost is reserved up front so it always fits the `-stock-max-bytes`
+budget.
+
 With `-artwork` (Classic only), embedded album art is extracted per album from
 the MP3 files (deduplicated by content, shared across compilation albums),
 converted to the device's RGB565 ithmb formats (56/128/320 px), and written to
@@ -170,6 +182,7 @@ rbdb sync-stock-db -firewire-guid 0x… /mnt # override the GUID
 rbdb sync-stock-db -dry-run /media/iPod    # validate/report, write nothing
 rbdb sync-stock-db -stock-max-bytes 56000000 /media/classic  # tighter budget
 rbdb sync-stock-db -artwork /media/classic # also write Cover Flow artwork
+rbdb sync-stock-db -shuffle /media/classic # also add a "New Shuffle" playlist
 ```
 
 ## MusicBrainz integration

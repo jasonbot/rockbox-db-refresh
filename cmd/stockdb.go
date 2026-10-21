@@ -26,16 +26,19 @@ import (
 const stockMaxBytesDefault = 58000000
 
 type stockOptions struct {
-	root        string
-	dryRun      bool
-	classic     bool
-	firewire    []byte
-	fireWireStr string
-	model       string
-	maxBytes    int
-	recency     float64
-	noRotate    bool
-	artwork     bool
+	root           string
+	dryRun         bool
+	classic        bool
+	firewire       []byte
+	fireWireStr    string
+	model          string
+	maxBytes       int
+	recency        float64
+	noRotate       bool
+	artwork        bool
+	shuffle        bool
+	shuffleLimit   int
+	shuffleRecency float64
 }
 
 var stockCommand = &cli.Command{
@@ -78,6 +81,21 @@ var stockCommand = &cli.Command{
 		&cli.BoolFlag{
 			Name:  "artwork",
 			Usage: "extract embedded album art and write ArtworkDB + ithmb files for Cover Flow (Classic only)",
+		},
+		&cli.BoolFlag{
+			Name:    "shuffle",
+			Usage:   "add a shuffled \"New Shuffle\" playlist to the stock database (shown in the stock firmware's Playlists menu); rebuilt on every sync",
+			Aliases: []string{"s"},
+		},
+		&cli.IntFlag{
+			Name:  "shuffle-limit",
+			Usage: "max tracks in the \"New Shuffle\" playlist",
+			Value: shuffle.ShuffleLimitDefault,
+		},
+		&cli.Float64Flag{
+			Name:  "shuffle-recency",
+			Usage: "recency bias strength for -shuffle: newer files tend to sit nearer the front; 0 = uniform shuffle",
+			Value: 2.0,
 		},
 		&cli.BoolFlag{
 			Name:    "no-tui",
@@ -169,16 +187,19 @@ var stockCommand = &cli.Command{
 		}
 
 		opts := stockOptions{
-			root:        absRoot,
-			dryRun:      dryRun,
-			classic:     classic,
-			firewire:    fw,
-			fireWireStr: fwStr,
-			model:       model,
-			maxBytes:    c.Int("stock-max-bytes"),
-			recency:     c.Float64("stock-recency"),
-			noRotate:    c.Bool("no-stock-rotate"),
-			artwork:     c.Bool("artwork"),
+			root:           absRoot,
+			dryRun:         dryRun,
+			classic:        classic,
+			firewire:       fw,
+			fireWireStr:    fwStr,
+			model:          model,
+			maxBytes:       c.Int("stock-max-bytes"),
+			recency:        c.Float64("stock-recency"),
+			noRotate:       c.Bool("no-stock-rotate"),
+			artwork:        c.Bool("artwork"),
+			shuffle:        c.Bool("shuffle"),
+			shuffleLimit:   c.Int("shuffle-limit"),
+			shuffleRecency: c.Float64("shuffle-recency"),
 		}
 
 		if useTUI {
@@ -191,6 +212,7 @@ var stockCommand = &cli.Command{
 		}
 
 		done := make(chan error, 1)
+		shuffleN := 0
 		stockJob(opts)(context.Background(), func(m any) {
 			switch msg := m.(type) {
 			case progress.Found:
@@ -204,15 +226,20 @@ var stockCommand = &cli.Command{
 				if msg.Dropped > 0 {
 					rotated = fmt.Sprintf(", %d tracks rotated out to fit the %d-byte budget", msg.Dropped, opts.maxBytes)
 				}
-				art := ""
-				if msg.ArtImages > 0 || msg.ArtAlbums > 0 {
-					art = fmt.Sprintf(", artwork: %d images (%d albums with art, %d failed)", msg.ArtImages, msg.ArtAlbums, msg.ArtFailed)
-				}
-				if opts.classic {
-					fmt.Fprintf(os.Stderr, "%d tracks, %d albums%s%s -> %s format (HASH58)\n", msg.N, msg.Albums, rotated, art, classicLabel(msg.Classic))
-				} else {
-					fmt.Fprintf(os.Stderr, "%d tracks, %d albums%s%s -> %s format\n", msg.N, msg.Albums, rotated, art, classicLabel(msg.Classic))
-				}
+			art := ""
+			if msg.ArtImages > 0 || msg.ArtAlbums > 0 {
+				art = fmt.Sprintf(", artwork: %d images (%d albums with art, %d failed)", msg.ArtImages, msg.ArtAlbums, msg.ArtFailed)
+			}
+			shuffleN = msg.ShuffleN
+			shuf := ""
+			if msg.ShuffleN > 0 {
+				shuf = fmt.Sprintf(", %q playlist: %d tracks", shuffle.StockPlaylistName, msg.ShuffleN)
+			}
+			if opts.classic {
+				fmt.Fprintf(os.Stderr, "%d tracks, %d albums%s%s%s -> %s format (HASH58)\n", msg.N, msg.Albums, rotated, art, shuf, classicLabel(msg.Classic))
+			} else {
+				fmt.Fprintf(os.Stderr, "%d tracks, %d albums%s%s%s -> %s format\n", msg.N, msg.Albums, rotated, art, shuf, classicLabel(msg.Classic))
+			}
 				if msg.ArtErr != nil {
 					fmt.Fprintf(os.Stderr, "artwork failed: %v\n", msg.ArtErr)
 				}
@@ -230,6 +257,9 @@ var stockCommand = &cli.Command{
 			fmt.Printf("\rDry run: would write %s            \n", dest)
 		} else {
 			fmt.Printf("\rWrote stock database to %s            \n", dest)
+			if shuffleN > 0 {
+				fmt.Printf("The stock firmware's Playlists menu now has a %q playlist (%d tracks).\n", shuffle.StockPlaylistName, shuffleN)
+			}
 		}
 		return nil
 	},
@@ -278,16 +308,30 @@ func stockJob(opts stockOptions) func(ctx context.Context, send func(any)) {
 		}
 
 		ipOpts := ipod.Options{Classic: opts.classic, FireWire: opts.firewire}
+
+		// With -shuffle, reserve the exact byte cost of the playlist up front
+		// so the rotation budget accounts for it; the playlist members are
+		// picked from the surviving tracks after the rotation below.
+		maxBytes := opts.maxBytes
+		if opts.shuffle {
+			plMax := min(opts.shuffleLimit, len(tracks))
+			maxBytes -= ipod.PlaylistReserve(opts.classic, shuffle.StockPlaylistName, plMax)
+			if maxBytes <= 0 {
+				send(progress.StockDB{Err: fmt.Errorf("the %q playlist (%d tracks) alone exceeds the %d-byte budget", shuffle.StockPlaylistName, plMax, opts.maxBytes)})
+				return
+			}
+		}
+
 		data, lay, err := ipod.BuildBytes(tracks, ipOpts)
 		dropped := 0
 		kept := tracks
-		if err == nil && len(data) > opts.maxBytes {
+		if err == nil && len(data) > maxBytes {
 			if opts.noRotate {
-				err = fmt.Errorf("iTunesDB is %d bytes, over the %d-byte budget (rotation disabled with -no-stock-rotate)", len(data), opts.maxBytes)
+				err = fmt.Errorf("iTunesDB is %d bytes, over the %d-byte budget (rotation disabled with -no-stock-rotate)", len(data)+opts.maxBytes-maxBytes, opts.maxBytes)
 			} else {
 				// Over budget: rotate whole albums out, newest-kept bias.
 				ordered := shuffle.RecencyAlbumOrder(tracks, opts.recency, ipod.AlbumKey)
-				data, lay, dropped, err = ipod.FitBytes(ordered, ipOpts, opts.maxBytes)
+				data, lay, dropped, err = ipod.FitBytes(ordered, ipOpts, maxBytes)
 				if err == nil {
 					kept = ordered[:lay.Tracks]
 				}
@@ -296,6 +340,25 @@ func stockJob(opts stockOptions) func(ctx context.Context, send func(any)) {
 		if err != nil {
 			send(progress.StockDB{Err: err})
 			return
+		}
+
+		// The "New Shuffle" stock-firmware playlist: a recency-weighted pick
+		// of the tracks that actually made the database (rotated-out tracks
+		// have no mhit to reference). The database is rebuilt from scratch on
+		// every sync, so the single playlist of this name is overwritten each
+		// run — the same shuffle as db --shuffle, inside the iTunesDB.
+		shuffleN := 0
+		if opts.shuffle {
+			picked := shuffle.PickShuffled(kept, opts.shuffleLimit, opts.shuffleRecency)
+			if len(picked) > 0 {
+				ipOpts.Playlists = []ipod.Playlist{{Name: shuffle.StockPlaylistName, Tracks: picked}}
+				data, lay, err = ipod.BuildBytes(kept, ipOpts)
+				if err != nil {
+					send(progress.StockDB{Err: err})
+					return
+				}
+				shuffleN = len(picked)
+			}
 		}
 
 		artImages, artAlbums, artFailed := 0, 0, 0
@@ -324,14 +387,14 @@ func stockJob(opts stockOptions) func(ctx context.Context, send func(any)) {
 			return
 		}
 		if opts.dryRun {
-			send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Dropped: dropped, Classic: opts.classic, Written: false})
+			send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Dropped: dropped, Classic: opts.classic, Written: false, ShuffleN: shuffleN})
 			return
 		}
 		if err := ipod.WriteDatabase(opts.root, data); err != nil {
 			send(progress.StockDB{Err: err})
 			return
 		}
-		send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Dropped: dropped, Classic: opts.classic, Written: true, ArtImages: artImages, ArtAlbums: artAlbums, ArtFailed: artFailed, ArtErr: artErr})
+		send(progress.StockDB{N: lay.Tracks, Albums: lay.Albums, Dropped: dropped, Classic: opts.classic, Written: true, ShuffleN: shuffleN, ArtImages: artImages, ArtAlbums: artAlbums, ArtFailed: artFailed, ArtErr: artErr})
 	}
 }
 

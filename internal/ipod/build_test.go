@@ -166,18 +166,19 @@ func parseBack(t *testing.T, db []byte) (tracks []parseTrack, albums []string, p
 				if iname != "mhyp" {
 					t.Fatalf("expected mhyp, got %q", iname)
 				}
-				pl := parsePlaylist{name: mhodOf(t, db, itemOff, itEnd, 1)}
-				pl.master = db[itemOff+0x14] == 1
-				// walk all children of the playlist and count mhip entries
-				for k := itemOff + int(binary.LittleEndian.Uint32(db[itemOff+4:])); k < itEnd; {
-					kn := string(db[k : k+4])
-					ktotal := int(binary.LittleEndian.Uint32(db[k+8:]))
-					if kn == "mhip" {
-						pl.mhips++
-					}
-					k += ktotal
+			pl := parsePlaylist{name: mhodOf(t, db, itemOff, itEnd, 1)}
+			pl.master = db[itemOff+0x14] == 1
+			// walk all children of the playlist and collect mhip entries
+			for k := itemOff + int(binary.LittleEndian.Uint32(db[itemOff+4:])); k < itEnd; {
+				kn := string(db[k : k+4])
+				ktotal := int(binary.LittleEndian.Uint32(db[k+8:]))
+				if kn == "mhip" {
+					pl.mhips++
+					pl.ids = append(pl.ids, binary.LittleEndian.Uint32(db[k+0x18:]))
 				}
-				playlists = append(playlists, pl)
+				k += ktotal
+			}
+			playlists = append(playlists, pl)
 			}
 			itemOff = itEnd
 		}
@@ -217,6 +218,7 @@ type parsePlaylist struct {
 	name   string
 	master bool
 	mhips  int
+	ids    []uint32 // track ids referenced by the mhip entries, in order
 }
 
 // TestParseBackRoundTrip verifies that a generated DB (both 5G and 6G)
@@ -258,6 +260,92 @@ func TestParseBackRoundTrip(t *testing.T) {
 			t.Fatalf("master playlist %+v", playlists[0])
 		}
 	}
+}
+
+// TestExtraPlaylist verifies that Options.Playlists emits a second,
+// non-master mhyp into the playlist dataset whose mhip entries reference the
+// built tracks in playlist order, and that PlaylistReserve predicts the
+// exact size delta (so byte-budget callers can rely on it).
+func TestExtraPlaylist(t *testing.T) {
+	tracks := testTracks()
+	for _, classic := range []bool{false, true} {
+		opts := Options{Classic: classic}
+		if classic {
+			opts.FireWire = []byte{1, 2, 3, 4, 5, 6, 7, 8}
+		}
+		base, _, err := BuildBytes(tracks, opts)
+		if err != nil {
+			t.Fatalf("classic=%v: %v", classic, err)
+		}
+
+		// Members keep the given order; a member missing from the build
+		// (nil here) is skipped.
+		opts.Playlists = []Playlist{{Name: "New Shuffle", Tracks: []*meta.Track{tracks[2], tracks[0], nil}}}
+		db, lay, err := BuildBytes(tracks, opts)
+		if err != nil {
+			t.Fatalf("classic=%v: %v", classic, err)
+		}
+		if lay.Tracks != 3 || lay.Albums != 2 {
+			t.Fatalf("lay = %+v", lay)
+		}
+		verifyChunks(t, db)
+
+		if got, want := len(db)-len(base), PlaylistReserve(classic, "New Shuffle", 2); got != want {
+			t.Fatalf("classic=%v: size delta %d, PlaylistReserve says %d", classic, got, want)
+		}
+
+		_, _, playlists := parseBack(t, db)
+		if len(playlists) != 2 {
+			t.Fatalf("classic=%v: playlists=%d, want master + 1 extra", classic, len(playlists))
+		}
+		if !playlists[0].master {
+			t.Fatalf("classic=%v: first playlist is not the master", classic)
+		}
+		extra := playlists[1]
+		if extra.master || extra.name != "New Shuffle" || extra.mhips != 2 {
+			t.Fatalf("classic=%v: extra playlist %+v", classic, extra)
+		}
+		// Track ids are 1-based in build order: tracks[2] -> 3, tracks[0] -> 1.
+		if len(extra.ids) != 2 || extra.ids[0] != 3 || extra.ids[1] != 1 {
+			t.Fatalf("classic=%v: extra playlist ids = %v, want [3 1]", classic, extra.ids)
+		}
+
+		// On Classic, dataset 3 (the boot-time podcast dataset mirror) must
+		// stay master-only: extra playlists live in dataset 2 exclusively.
+		if classic {
+			if names := playlistNamesInDataset(t, db, 3); len(names) != 1 || names[0] != "iPod" {
+				t.Fatalf("dataset 3 playlists = %v, want [iPod]", names)
+			}
+			if names := playlistNamesInDataset(t, db, 2); len(names) != 2 || names[0] != "iPod" || names[1] != "New Shuffle" {
+				t.Fatalf("dataset 2 playlists = %v, want [iPod New Shuffle]", names)
+			}
+		}
+	}
+}
+
+// playlistNamesInDataset returns the names of all playlists in the given
+// mhsd dataset type, in file order.
+func playlistNamesInDataset(t *testing.T, db []byte, wantTyp int) []string {
+	t.Helper()
+	var names []string
+	off := int(binary.LittleEndian.Uint32(db[4:]))
+	end := int(binary.LittleEndian.Uint32(db[8:]))
+	for off < end {
+		styp := int(binary.LittleEndian.Uint32(db[off+0x0C:]))
+		mhsdEnd := off + int(binary.LittleEndian.Uint32(db[off+8:]))
+		listOff := off + int(binary.LittleEndian.Uint32(db[off+4:]))
+		count := int(binary.LittleEndian.Uint32(db[listOff+8:]))
+		itemOff := listOff + int(binary.LittleEndian.Uint32(db[listOff+4:]))
+		for i := 0; i < count; i++ {
+			itEnd := itemOff + int(binary.LittleEndian.Uint32(db[itemOff+8:]))
+			if styp == wantTyp && string(db[itemOff:itemOff+4]) == "mhyp" {
+				names = append(names, mhodOf(t, db, itemOff, itEnd, 1))
+			}
+			itemOff = itEnd
+		}
+		off = mhsdEnd
+	}
+	return names
 }
 
 // datasetTypes returns the ordered mhsd dataset types in an mhbd database.

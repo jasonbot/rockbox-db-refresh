@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"rbdb/internal/progress"
+	"rbdb/internal/shuffle"
 )
 
 // tickMsg drives periodic UI refreshes.
@@ -805,6 +806,9 @@ func (m stockTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Dropped > 0 {
 				line += fmt.Sprintf(", %d tracks rotated out to fit budget", msg.Dropped)
 			}
+			if msg.ShuffleN > 0 {
+				line += fmt.Sprintf(", %q playlist: %d tracks", shuffle.StockPlaylistName, msg.ShuffleN)
+			}
 			if msg.ArtImages > 0 {
 				line += fmt.Sprintf(", artwork: %d images", msg.ArtImages)
 			}
@@ -817,6 +821,9 @@ func (m stockTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				"dry run: %d tracks, %d albums (%d skipped", msg.N, msg.Albums, m.base.skipped)
 			if msg.Dropped > 0 {
 				line += fmt.Sprintf(", %d would rotate out", msg.Dropped)
+			}
+			if msg.ShuffleN > 0 {
+				line += fmt.Sprintf(", %q playlist: %d tracks", shuffle.StockPlaylistName, msg.ShuffleN)
 			}
 			m.base.logLine(styleDim.Render(line + ")"))
 		}

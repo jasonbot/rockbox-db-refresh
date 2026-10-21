@@ -126,6 +126,12 @@ func NewPlaylistName(t time.Time) string {
 	return t.Format("2006-01-02 15 New Shuffle") + PlaylistFileExt
 }
 
+// StockPlaylistName is the name of the shuffled playlist sync-stock-db
+// -shuffle writes into the stock iTunesDB. The database is rebuilt from
+// scratch on every sync, so the single playlist of this name is overwritten
+// (never duplicated) each run.
+const StockPlaylistName = "New Shuffle"
+
 // CatalogDir resolves the host path of the device's playlist catalogue for a
 // device mounted at root. It honours the "playlist catalog directory" setting
 // in <rbDir>/config.cfg and otherwise falls back to the firmware default
@@ -163,6 +169,19 @@ func readCatalogDir(rbDir string) string {
 	return ""
 }
 
+// PickShuffled returns up to limit tracks in recency-weighted shuffled
+// order (the same scheme as the catalogue playlist). A limit <= 0 or larger
+// than the track count means all tracks. The input slice order is preserved.
+func PickShuffled(tracks []*meta.Track, limit int, recency float64) []*meta.Track {
+	if limit <= 0 || limit > len(tracks) {
+		limit = len(tracks)
+	}
+	order := make([]*meta.Track, len(tracks))
+	copy(order, tracks)
+	recencyShuffle(order, recency)
+	return order[:limit]
+}
+
 // WriteCatalogPlaylist shuffles tracks and writes a new UTF-8 playlist into
 // the catalogue directory so the firmware lists it in the "Playlists" menu.
 // The file is named "<YYYY-MM-DD HH> New Shuffle.m3u8" and holds device-
@@ -171,21 +190,11 @@ func WriteCatalogPlaylist(catDir string, tracks []*meta.Track, limit int, recenc
 	if len(tracks) == 0 {
 		return "", 0, fmt.Errorf("no tracks to shuffle")
 	}
-	if limit <= 0 || limit > len(tracks) {
-		limit = len(tracks)
-	}
-	recencyShuffle(tracks, recency)
-	picked := make([]string, 0, limit)
-	for _, t := range tracks {
-		if len(picked) == cap(picked) {
-			break
-		}
-		picked = append(picked, t.DevPath)
-	}
+	picked := PickShuffled(tracks, limit, recency)
 
 	var b []byte
-	for _, p := range picked {
-		b = append(b, p...)
+	for _, t := range picked {
+		b = append(b, t.DevPath...)
 		b = append(b, '\n')
 	}
 	if err := os.MkdirAll(catDir, 0755); err != nil {

@@ -48,6 +48,22 @@ type Options struct {
 	// in their mhit header; the fields live in the fixed-size header, so
 	// this never changes the database size. Nil means no artwork.
 	Artwork map[*meta.Track]artwork.ArtLink
+
+	// Playlists lists extra (non-master) playlists to emit into the
+	// database; the stock firmware shows them in its Playlists menu in the
+	// given order. Each playlist's tracks must be a subset of the tracks
+	// being built (they are referenced by the track ids assigned during the
+	// build); members not present in the build are skipped. The whole
+	// database is rewritten on every sync, so a playlist of the same name
+	// is overwritten rather than duplicated.
+	Playlists []Playlist
+}
+
+// Playlist is a named, ordered list of tracks emitted into the iTunesDB as
+// a non-master mhyp in the playlist dataset (mhsd type 2).
+type Playlist struct {
+	Name   string
+	Tracks []*meta.Track
 }
 
 // Layout summarizes what was written, for reporting.
@@ -213,10 +229,12 @@ func BuildBytes(tracks []*meta.Track, opts Options) ([]byte, *Layout, error) {
 
 	// Assign a stable 1-based id to each track and build the track dataset.
 	ids := make([]uint32, len(tracks))
+	idOf := make(map[*meta.Track]uint32, len(tracks))
 	var trackChunks []byte
 	for i, t := range tracks {
 		id := uint32(i + 1)
 		ids[i] = id
+		idOf[t] = id
 		art, hasArt := opts.Artwork[t]
 		trackChunks = append(trackChunks, buildMhit(f, t, id, albums.trackAlbum[i], now, art, hasArt)...)
 	}
@@ -231,16 +249,37 @@ func BuildBytes(tracks []*meta.Track, opts Options) ([]byte, *Layout, error) {
 	}
 	ds[4] = wrapMhsd(f, 4, appendChunks(chunk("mhla", f.mhltHdr, uint32(len(albums.order))), albumChunks))
 
-	// Playlist list (mhsd type 2): only the master library playlist, matching
-	// Apple/libgpod. Album browsing uses the type-4 dataset above; per-album
-	// playlists are intentionally not emitted.
+	// Playlist list (mhsd type 2): the master library playlist, plus any
+	// extra playlists the caller asked for (e.g. the "New Shuffle" mix).
+	// Album browsing uses the type-4 dataset above; per-album playlists are
+	// intentionally not emitted.
 	playlists := buildMhyp(f, true, "iPod", tracks, ids, now, now)
-	ds[2] = wrapMhsd(f, 2, appendChunks(chunk("mhlp", f.mhltHdr, 1), playlists))
+	ds2 := playlists
+	plCount := 1
+	for i, pl := range opts.Playlists {
+		var memberIDs []uint32
+		for _, t := range pl.Tracks {
+			if id, ok := idOf[t]; ok {
+				memberIDs = append(memberIDs, id)
+			}
+		}
+		if len(memberIDs) == 0 {
+			continue
+		}
+		ds2 = append(ds2, buildMhyp(f, false, pl.Name, nil, memberIDs, now+uint64(i)+1, now)...)
+		plCount++
+	}
+	ds[2] = wrapMhsd(f, 2, appendChunks(chunk("mhlp", f.mhltHdr, uint32(plCount)), ds2))
 
-	// Dataset type 3 (the podcast-playlist dataset) mirrors the regular
-	// playlist list exactly as libgpod does: the Classic firmware reads the
-	// master playlist's browse indexes from there, so an empty stub boots
-	// but leaves the Songs/Albums/Artists menus dead.
+	// Dataset type 3 (the podcast-playlist dataset) holds only the master
+	// playlist, exactly like the validated no-extra-playlists layout: the
+	// Classic firmware reads the master playlist's browse indexes from
+	// there, so an empty stub boots but leaves the Songs/Albums/Artists
+	// menus dead. Extra user playlists deliberately do NOT go into this
+	// dataset — real iTunes databases only ever carry the podcasts playlist
+	// here, and a non-master playlist in the boot-time podcast parse path
+	// hangs the Classic firmware at the Apple logo (it also halves the
+	// playlist's boot RAM cost, which the boot budget is sensitive to).
 	if f.classic {
 		ds[3] = wrapMhsd(f, 3, appendChunks(chunk("mhlp", f.mhltHdr, 1), playlists))
 		ds[8] = wrapMhsd(f, 8, chunk("mhli", f.mhltHdr, 0))
@@ -543,6 +582,20 @@ func buildMhia(f dbFormat, rep *meta.Track, id int) []byte {
 		u.PutUint16(hdr[0x12:], uint16(id+1)) // legacy album id
 	}
 	return append(hdr, children...)
+}
+
+// PlaylistReserve returns the exact number of bytes an extra playlist with
+// the given name and member count adds to the database (mhyp header, name
+// mhod, per-member mhip entries, and on Classic the fixed preferences mhod).
+// Callers working under a byte budget subtract it before deciding how many
+// tracks fit; the playlist members themselves carry no extra cost.
+func PlaylistReserve(classic bool, name string, members int) int {
+	f := formatFor(classic)
+	n := int(f.mhypHdr) + len(buildMhodString(mhodTitle, name))
+	if f.classic {
+		n += len(buildLongMhodOrder())
+	}
+	return n + members*len(buildMhip(f, 0, 0, 0))
 }
 
 // buildMhyp serializes a playlist: name mhod + one mhip per member track.
