@@ -157,6 +157,21 @@ var stockCommand = &cli.Command{
 		if _, err := os.Stat(filepath.Join(rbDir, "database_idx.tcd")); err != nil {
 			return fmt.Errorf("no Rockbox tagcache database at %s (run 'rbdb db' first)", rbDir)
 		}
+
+		// Refuse to leave a stale ArtworkDB behind. The ArtworkDB's mhii
+		// entries cross-reference track dbids in the iTunesDB, and those ids
+		// are reassigned on every sync (rotation deliberately reshuffles
+		// them), so rewriting the iTunesDB without rebuilding the ArtworkDB
+		// in the same run produces a pair the Classic firmware has been
+		// observed to hang on at boot (Apple logo). Keep them consistent or
+		// remove the artwork store.
+		if !c.Bool("artwork") && !dryRun {
+			artDir := filepath.Join(absRoot, artwork.ArtworkDir)
+			if _, err := os.Stat(filepath.Join(artDir, "ArtworkDB")); err == nil {
+				return fmt.Errorf("an ArtworkDB exists at %s but -artwork is off; writing a fresh iTunesDB would orphan it (the stock firmware can hang at boot on the out-of-sync pair). Re-run with -artwork, or remove/rename %s", artDir, artDir)
+			}
+		}
+
 		tracks, err := db.ReadDatabase(rbDir)
 		if err != nil {
 			return fmt.Errorf("reading Rockbox database: %w", err)

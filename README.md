@@ -173,7 +173,12 @@ converted to the device's RGB565 ithmb formats (56/128/320 px), and written to
 `<root>/iPod_Control/Artwork/` (`ArtworkDB` + `F*.ithmb`) so Cover Flow and the
 Now Playing screen show covers. Tracks are linked via the mhit `mhii_link`
 field, which lives in the fixed-size header, so artwork never changes the
-iTunesDB size or the rotation budget.
+iTunesDB size or the rotation budget. Because the ArtworkDB cross-references
+track ids that are reassigned on every sync, the two databases must be written
+in the same run: if an ArtworkDB exists and `-artwork` is off, `sync-stock-db`
+refuses to write rather than leave an out-of-sync pair the stock firmware can
+hang on at boot (remove or rename `iPod_Control/Artwork/` if you no longer
+want artwork).
 
 ```sh
 rbdb sync-stock-db /media/classic          # format + GUID detected from SysInfo

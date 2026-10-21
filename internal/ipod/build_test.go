@@ -310,14 +310,17 @@ func TestExtraPlaylist(t *testing.T) {
 			t.Fatalf("classic=%v: extra playlist ids = %v, want [3 1]", classic, extra.ids)
 		}
 
-		// On Classic, dataset 3 (the boot-time podcast dataset mirror) must
-		// stay master-only: extra playlists live in dataset 2 exclusively.
+		// On Classic, dataset 3 (the podcast-playlist dataset) must mirror
+		// dataset 2 exactly as libgpod emits it — the 6G/7G firmware reads
+		// its playlist list from there, so a master-only mirror leaves
+		// extra playlists invisible in the stock Playlists menu.
 		if classic {
-			if names := playlistNamesInDataset(t, db, 3); len(names) != 1 || names[0] != "iPod" {
-				t.Fatalf("dataset 3 playlists = %v, want [iPod]", names)
-			}
-			if names := playlistNamesInDataset(t, db, 2); len(names) != 2 || names[0] != "iPod" || names[1] != "New Shuffle" {
-				t.Fatalf("dataset 2 playlists = %v, want [iPod New Shuffle]", names)
+			want := []string{"iPod", "New Shuffle"}
+			for _, typ := range []int{2, 3} {
+				names := playlistNamesInDataset(t, db, typ)
+				if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
+					t.Fatalf("dataset %d playlists = %v, want %v", typ, names, want)
+				}
 			}
 		}
 	}
