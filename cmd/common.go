@@ -35,6 +35,12 @@ func PlainProgressHandler(label, dir string, doneCh chan error) func(any) {
 		case progress.Refresh:
 			vlogf("database refresh: kept %d, updated %d, added %d, removed %d",
 				msg.Kept, msg.Updated, msg.Added, msg.Removed)
+		case progress.Shuffle:
+			if msg.Err != nil {
+				fmt.Printf("shuffle playlist failed: %v\n", msg.Err)
+			} else {
+				fmt.Printf("Created shuffled playlist (%d tracks): %s\n", msg.N, msg.Path)
+			}
 		case progress.Done:
 			doneCh <- msg.Err
 		}

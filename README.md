@@ -95,6 +95,9 @@ rbdb sync [options] <origin> <destination>
 | `-overwrite`       | off     | overwrite existing files                            |
 | `-delete`          | off     | remove destination files not in origin              |
 | `-update`          | off     | refresh the device's `.rockbox` tagcache after sync |
+| `-shuffle`         | off     | also create a shuffled catalogue playlist (implies `-update`) |
+| `-shuffle-limit N` | 9999    | max tracks in shuffled playlist                     |
+| `-shuffle-recency F` | 2.0   | recency bias for the shuffle (0 = uniform)          |
 | `-normalize MODE`  | none    | metadata normalization: `none`, `fill`, `overwrite` |
 | `-no-art`          | off     | skip cover art fetching                             |
 | `-min-score N`     | 50      | minimum MusicBrainz search score                    |
@@ -109,6 +112,7 @@ instead of being copied verbatim.
 ```sh
 rbdb sync /music/library /mnt/player/Music
 rbdb sync -overwrite -normalize fill /music /mnt/player/Music
+rbdb sync -update -shuffle /music /mnt/player/Music  # sync + tagcache + playlist
 ```
 
 ### rbdb sync-stock-db

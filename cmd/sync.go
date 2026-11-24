@@ -18,6 +18,7 @@ import (
 	"rbdb/internal/meta"
 	"rbdb/internal/musicbrainz"
 	"rbdb/internal/progress"
+	"rbdb/internal/shuffle"
 	"rbdb/internal/tui"
 	"rbdb/internal/walker"
 )
@@ -64,6 +65,20 @@ var syncCommand = &cli.Command{
 		&cli.BoolFlag{
 			Name:  "update",
 			Usage: "update rockbox database files with changes",
+		},
+		&cli.BoolFlag{
+			Name:  "shuffle",
+			Usage: "also create a new shuffled playlist in the device's playlist catalogue (implies -update)",
+		},
+		&cli.IntFlag{
+			Name:  "shuffle-limit",
+			Usage: "max tracks in the shuffled playlist (firmware default max is 10000)",
+			Value: shuffle.ShuffleLimitDefault,
+		},
+		&cli.Float64Flag{
+			Name:  "shuffle-recency",
+			Usage: "recency bias strength for -shuffle: newer files tend to sit nearer the front; 0 = uniform shuffle",
+			Value: 2.0,
 		},
 		&cli.BoolFlag{
 			Name:    "no-tui",
@@ -129,16 +144,19 @@ var syncCommand = &cli.Command{
 		}
 
 		opts := syncOptions{
-			origin:      absOrigin,
-			destination: absDest,
-			dryRun:      dryRun,
-			normalize:   normalize,
-			noArt:       noArt,
-			overwrite:   c.Bool("overwrite"),
-			deleteExtra: c.Bool("delete"),
-			updateDB:    c.Bool("update"),
-			minScore:    minScore,
-			musicBrainz: mbClient,
+			origin:         absOrigin,
+			destination:    absDest,
+			dryRun:         dryRun,
+			normalize:      normalize,
+			noArt:          noArt,
+			overwrite:      c.Bool("overwrite"),
+			deleteExtra:    c.Bool("delete"),
+			updateDB:       c.Bool("update") || c.Bool("shuffle"),
+			shuffle:        c.Bool("shuffle"),
+			shuffleLimit:   c.Int("shuffle-limit"),
+			shuffleRecency: c.Float64("shuffle-recency"),
+			minScore:       minScore,
+			musicBrainz:    mbClient,
 		}
 
 		useTUI := !noTUI && !dryRun && isTTY(os.Stdout)
@@ -173,16 +191,19 @@ var syncCommand = &cli.Command{
 }
 
 type syncOptions struct {
-	origin      string
-	destination string
-	dryRun      bool
-	normalize   string
-	noArt       bool
-	overwrite   bool
-	deleteExtra bool
-	updateDB    bool
-	minScore    int
-	musicBrainz *musicbrainz.Client
+	origin         string
+	destination    string
+	dryRun         bool
+	normalize      string
+	noArt          bool
+	overwrite      bool
+	deleteExtra    bool
+	updateDB       bool
+	shuffle        bool
+	shuffleLimit   int
+	shuffleRecency float64
+	minScore       int
+	musicBrainz    *musicbrainz.Client
 }
 
 func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
@@ -194,6 +215,8 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 			fmt.Sprintf("no-art:     %v", opts.noArt),
 			fmt.Sprintf("overwrite:  %v", opts.overwrite),
 			fmt.Sprintf("delete:     %v", opts.deleteExtra),
+			fmt.Sprintf("update-db:  %v", opts.updateDB),
+			fmt.Sprintf("shuffle:    %v", opts.shuffle),
 			fmt.Sprintf("dry-run:    %v", opts.dryRun),
 			fmt.Sprintf("min-score:  %d", opts.minScore),
 			fmt.Sprintf("workers:    %d", runtime.NumCPU()),
@@ -324,7 +347,12 @@ func syncJob(opts syncOptions) func(ctx context.Context, send func(any)) {
 						send(m)
 					}
 				}
-				if err := runDB(jobCtx, rbRoot, dbOptions{refresh: true}, dbSend); err != nil {
+				if err := runDB(jobCtx, rbRoot, dbOptions{
+					refresh:        true,
+					shuffle:        opts.shuffle,
+					shuffleLimit:   opts.shuffleLimit,
+					shuffleRecency: opts.shuffleRecency,
+				}, dbSend); err != nil {
 					if errors.Is(err, context.Canceled) {
 						send(progress.Cancelled{})
 						return

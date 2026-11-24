@@ -657,6 +657,13 @@ func (m syncTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"database: %d kept, %d updated, %d added, %d removed",
 			msg.Kept, msg.Updated, msg.Added, msg.Removed)))
 
+	case progress.Shuffle:
+		if msg.Err != nil {
+			m.base.logLine(logLineSkip.Render(fmt.Sprintf("shuffle playlist failed: %v", msg.Err)))
+		} else {
+			m.base.logLine(styleOK.Render(fmt.Sprintf("created shuffled playlist: %d tracks (%s)", msg.N, msg.Path)))
+		}
+
 	case progress.Banner:
 		for _, line := range msg.Lines {
 			m.base.logLine(styleDim.Render(line))
